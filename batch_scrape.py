@@ -86,7 +86,11 @@ def main():
                     saved = save_search(keyword, "1", raw_videos)
                     print(f"[*] Saved {saved} unique videos to DB.")
 
-                qmod.mark_done(term_id, videos_saved=saved)
+                if saved == 0:
+                    qmod.mark_retry(term_id)
+                    print(f"[*] 0 saved → term returned to pending for retry.")
+                else:
+                    qmod.mark_done(term_id, videos_saved=saved)
 
             except Exception as e:
                 print(f"[!] Failed on '{keyword}': {e}")

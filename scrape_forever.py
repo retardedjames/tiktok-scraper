@@ -163,7 +163,10 @@ def main():
                     from db import save_search
                     saved = save_search(keyword, "1", raw_videos)
 
-                qmod.mark_done(term_id, videos_saved=saved)
+                if saved == 0:
+                    qmod.mark_retry(term_id)
+                else:
+                    qmod.mark_done(term_id, videos_saved=saved)
                 terms_done += 1
                 _log(f"    '{keyword}' → {saved} saved ({total} captured)")
                 if NTFY_PER_TERM:

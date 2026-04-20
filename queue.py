@@ -145,6 +145,23 @@ def mark_failed(term_id):
         session.commit()
 
 
+def mark_retry(term_id):
+    """Return a term to the pending pool so another run picks it up.
+
+    Use when a run produced 0 saves — likely a transient UI/capture issue, not
+    a genuinely empty term. Safer than mark_done (which would retire the term).
+    """
+    with Session(engine) as session:
+        session.execute(
+            text("""
+                UPDATE terms SET status = 'pending', started_at = NULL,
+                completed_at = NULL WHERE id = :id
+            """),
+            {"id": term_id}
+        )
+        session.commit()
+
+
 def reset_in_progress():
     """Reset stuck in_progress terms to pending (e.g. after a crash)."""
     with Session(engine) as session:

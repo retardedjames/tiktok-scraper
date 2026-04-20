@@ -21,7 +21,7 @@ API only returns recent content.
 1. mitmproxy runs on the GCP VM, listening on port 8080
 2. Android proxy tunnels through mitmproxy via `adb reverse`
 3. ADB UI-automates TikTok Lite: search → sort by likes → scroll
-4. mitmproxy intercepts `/aweme/v1/general/search/single/` responses
+4. mitmproxy intercepts `/aweme/v1/general/search/stream/` (cursor=0, first page of ~10 top-liked results, chunked + multi-JSON) and `/aweme/v1/general/search/single/` (cursor=10, 20, … paginated). Parsed by `tt_dump.py`.
 5. Results are deduplicated and upserted to PostgreSQL on the Oracle VPS
 
 Multiple VMs pull from the same shared queue (`terms` table, `FOR UPDATE SKIP LOCKED`).
