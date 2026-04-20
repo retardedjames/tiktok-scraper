@@ -11,6 +11,6 @@ if [ -f .env ]; then
     set -a; source .env; set +a
 fi
 
-git pull --ff-only
+git fetch --quiet && git reset --hard origin/main
 
 exec python3 scrape_forever.py "$@"
