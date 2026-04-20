@@ -303,10 +303,12 @@ def _recent_likes(fname: str, n: int = 10) -> list[int]:
 
 
 def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 10,
-                 min_likes: int = 7_000, below_threshold: int = 3) -> int:
+                 min_likes: int = 7_000, below_threshold: int = 3,
+                 max_scrolls: int = 33) -> int:
     """
-    Scroll in batches until `below_threshold` of the last 10 captured videos
-    are under `min_likes`, or TikTok stops loading new content.
+    Scroll in batches up to max_scrolls total, stopping early if
+    `below_threshold` of the last 10 captured videos are under `min_likes`,
+    or TikTok stops loading new content.
     Returns total scroll count.
     """
     fname = f"/tmp/tt_{keyword}_{sort_type}.jsonl"
@@ -315,10 +317,11 @@ def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 10,
     while True:
         prev_count = _jsonl_line_count(fname)
 
-        for _ in range(batch):
+        this_batch = min(batch, max_scrolls - total)
+        for _ in range(this_batch):
             adb("shell input swipe 360 1200 360 400 500")
             time.sleep(1.2)
-        total += batch
+        total += this_batch
 
         new_count = _jsonl_line_count(fname)
         if new_count - prev_count == 0:
@@ -339,6 +342,10 @@ def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 10,
         min_recent = min(recent) if recent else 0
         print(f"[*] {total} scrolls — {new_count} lines captured, "
               f"min recent likes: {min_recent:,} ({below}/10 under {min_likes:,})")
+
+        if total >= max_scrolls:
+            print(f"[*] Reached max {max_scrolls} scrolls.")
+            break
 
         if below >= below_threshold:
             print(f"[*] Hit sub-{min_likes:,} likes threshold, stopping.")
