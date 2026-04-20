@@ -7,6 +7,15 @@ def response(flow: http.HTTPFlow):
     if not ("tiktok" in host or "tiktokv" in host):
         return
     path = flow.request.path
+    if "search" in path:
+        query = dict(flow.request.query)
+        kw = query.get("keyword", "")
+        st = query.get("sort_type", "?")
+        cur = query.get("cursor", "?")
+        if "search/item" not in path and "search/stream" not in path and "search/single" not in path:
+            print(f"[mitmproxy] UNMATCHED search path: {path} kw={kw!r} sort={st} cursor={cur}", flush=True)
+            return
+
     if "search/item" not in path and "search/stream" not in path and "search/single" not in path:
         return
 
