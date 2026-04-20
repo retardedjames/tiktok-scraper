@@ -14,6 +14,7 @@ Environment:
 """
 import argparse
 import os
+import signal
 import sys
 import time
 import traceback
@@ -39,6 +40,31 @@ NTFY_PER_TERM     = os.environ.get("NTFY_PER_TERM", "0") == "1"
 MAX_CONSECUTIVE_EMPTY = 2
 IDLE_SLEEP = 30  # seconds to wait when queue is empty before retrying
 HEARTBEAT_EVERY = 50  # notify every N terms so you know it's alive
+
+_current_term: str = "(none)"  # updated each iteration so signal handler can report it
+
+
+def _handle_signal(signum, frame):
+    sig_name = signal.Signals(signum).name
+    msg = f"KILLED by {sig_name} (was scraping: '{_current_term}') — external stop, not a scraper failure."
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}"
+    print(line, flush=True)
+    with open(STATUS_FILE, "a") as f:
+        f.write(line + "\n")
+    # Best-effort ntfy — ignore if network is gone
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"https://ntfy.sh/{NTFY_TOPIC}",
+            data=msg.encode(),
+            headers={"Title": f"TikTok Scraper [{VM_NAME}]", "Priority": "low", "Tags": "stop_sign"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=3)
+    except Exception:
+        pass
+    sys.exit(0)
 
 
 def _notify(msg: str, priority: str = "default", tags: str = ""):
@@ -73,6 +99,9 @@ def _log(msg: str, also_status: bool = False, notify: bool = False,
 
 
 def main():
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-likes", type=int, default=5_000)
     parser.add_argument("--debug", action="store_true", help="Save screenshots at each UI step")
@@ -108,6 +137,8 @@ def main():
                 continue
 
             term_id, keyword = terms[0]
+            global _current_term
+            _current_term = keyword
             _log(f"[>] '{keyword}'")
 
             for sort_type in ["1", "rel"]:
