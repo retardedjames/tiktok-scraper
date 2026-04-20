@@ -14,7 +14,10 @@ def response(flow: http.HTTPFlow):
 
     # Log every TikTok search path so we can find cursor=0
     if "search" in path:
-        print(f"[path] {path} kw={kw!r} sort={sort_type} cursor={cursor}", flush=True)
+        msg = f"[path] {path} kw={kw!r} sort={sort_type} cursor={cursor}\n"
+        print(msg, end="", flush=True)
+        with open("/tmp/tt_paths.log", "a") as _pf:
+            _pf.write(msg)
 
     is_known = "search/item" in path or "search/stream" in path or "search/single" in path
     if not is_known:
