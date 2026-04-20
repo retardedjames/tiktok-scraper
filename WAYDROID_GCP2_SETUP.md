@@ -1,9 +1,12 @@
 # TikTok Scraper — GCP VM Setup Guide
 
-This document is the single source of truth for provisioning a new GCP Waydroid VM and
-getting a scraper instance running. Every GCP VM in this fleet is identical in structure
-and environment. A fresh Claude instance handed this file and a clean Ubuntu VM should
-be able to reach a working scraper with no external help.
+> **DEPRECATED — kept for historical reference only.**
+> New VMs are no longer provisioned from scratch. They are created by cloning a GCP
+> machine image of GCP2. See **`CLONE_SETUP.md`** for the current operational guide —
+> that is the file a Claude instance should use for all VM work going forward.
+
+This document records how GCP2 was originally built from a clean Ubuntu 25.10 VM.
+Do not follow these steps to add new fleet VMs.
 
 ---
 
@@ -234,9 +237,10 @@ to the new VM's Android container. Do this AFTER Waydroid is fully booted on the
 
 ```bash
 # On GCP2: export TikTok's app data directory
+# Note: pipe to tee — writing to /tmp inside lxc-attach targets the container's /tmp, not the host's
 ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251 \
   "sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- \
-   tar -czf /tmp/tiktok_session.tar.gz -C /data/data com.tiktok.lite.go"
+   tar -czf - -C /data/data com.tiktok.lite.go | sudo tee /tmp/tiktok_session.tar.gz > /dev/null"
 
 # Copy the archive from GCP2 to local, then to the new VM
 scp -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251:/tmp/tiktok_session.tar.gz /tmp/

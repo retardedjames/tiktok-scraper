@@ -91,6 +91,7 @@ sudo -u $WAYDROID_USER env XDG_RUNTIME_DIR=$XDG WAYLAND_DISPLAY=wayland-1 \
 sleep 5
 tail -3 /tmp/waydroid_ui.log 2>/dev/null || true
 
+VM_IP=$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip -H 'Metadata-Flavor: Google' 2>/dev/null || hostname -I | awk '{print $1}')
 echo "[*] All done!"
-echo "[*] VNC: 34.153.25.251:5900  (TigerVNC or RealVNC, no password)"
-echo "[*] ADB: adb connect 34.153.25.251:5556"
+echo "[*] VNC: ${VM_IP}:5900  (TigerVNC or RealVNC, no password)"
+echo "[*] ADB: adb connect ${VM_IP}:5556"
