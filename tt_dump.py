@@ -7,16 +7,26 @@ def response(flow: http.HTTPFlow):
     if not ("tiktok" in host or "tiktokv" in host):
         return
     path = flow.request.path
-    if "search" in path:
-        query = dict(flow.request.query)
-        kw = query.get("keyword", "")
-        st = query.get("sort_type", "?")
-        cur = query.get("cursor", "?")
-        if "search/item" not in path and "search/stream" not in path and "search/single" not in path:
-            print(f"[mitmproxy] UNMATCHED search path: {path} kw={kw!r} sort={st} cursor={cur}", flush=True)
-            return
-
-    if "search/item" not in path and "search/stream" not in path and "search/single" not in path:
+    is_known = "search/item" in path or "search/stream" in path or "search/single" in path
+    if not is_known:
+        # Sniff any other TikTok path for aweme lists so we can find cursor=0
+        try:
+            body_peek = flow.response.content
+            enc_peek = flow.response.headers.get("content-encoding", "")
+            if "br" in enc_peek:
+                import brotli as _br; body_peek = _br.decompress(body_peek)
+            elif "gzip" in enc_peek:
+                body_peek = gzip.decompress(body_peek)
+            data_peek = json.loads(body_peek)
+            has_videos = (data_peek.get("aweme_list") or data_peek.get("item_list")
+                          or data_peek.get("video_list"))
+            if has_videos:
+                q = dict(flow.request.query)
+                print(f"[mitmproxy] FOUND VIDEOS on non-search path: {path} "
+                      f"kw={q.get('keyword','')!r} sort={q.get('sort_type','?')} "
+                      f"cursor={q.get('cursor','?')} count={len(has_videos)}", flush=True)
+        except Exception:
+            pass
         return
 
     query = dict(flow.request.query)
