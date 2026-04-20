@@ -2,6 +2,15 @@
 import json, gzip
 from mitmproxy import http
 
+def request(flow: http.HTTPFlow):
+    host = flow.request.host
+    if not ("tiktok" in host or "tiktokv" in host):
+        return
+    if "search" in flow.request.path:
+        q = dict(flow.request.query)
+        print(f"[req] {flow.request.path} kw={q.get('keyword','')!r} sort={q.get('sort_type','?')} cursor={q.get('cursor','?')}", flush=True)
+
+
 def response(flow: http.HTTPFlow):
     host = flow.request.host
     if not ("tiktok" in host or "tiktokv" in host):
