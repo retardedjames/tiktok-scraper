@@ -30,7 +30,10 @@ import time
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Direct emulator ADB port (LDPlayer=5555, MuMu=7555, Android Studio AVD=5554)
+# Set ADB_DEVICE to skip auto-detection and use a specific device directly.
+# e.g. ADB_DEVICE=127.0.0.1:5555 when running on GCP2 itself.
+ADB_DEVICE = os.environ.get("ADB_DEVICE", "")
+
 EMULATOR_ADB_PORT = int(os.environ.get("EMULATOR_ADB_PORT", "5554"))
 
 
@@ -41,7 +44,8 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 
 def _adb(cmd: str) -> subprocess.CompletedProcess:
-    return _run(["adb"] + cmd.split())
+    base = ["adb", "-s", ADB_DEVICE] if ADB_DEVICE else ["adb"]
+    return _run(base + cmd.split())
 
 
 def _ok(msg: str):   print(f"  [✓] {msg}")
@@ -76,7 +80,17 @@ def _windows_host_ip() -> str:
 # ── individual checks ─────────────────────────────────────────────────────────
 
 def check_adb_device(auto_fix: bool = True) -> bool:
-    """Connect to the Windows-side emulator via ADB TCP."""
+    """Connect to the emulator via ADB TCP."""
+    # If ADB_DEVICE is set, connect directly and skip auto-detection
+    if ADB_DEVICE:
+        _run(["adb", "connect", ADB_DEVICE])
+        r = _run(["adb", "-s", ADB_DEVICE, "get-state"])
+        if r.returncode == 0 and "device" in r.stdout:
+            _ok(f"ADB device connected: {ADB_DEVICE}")
+            return True
+        _fail(f"ADB_DEVICE={ADB_DEVICE} not reachable (state: {r.stdout.strip() or r.stderr.strip()})")
+        return False
+
     r = _run(["adb", "devices"])
     devices = [l for l in r.stdout.splitlines()[1:] if l.strip() and "device" in l]
     if devices:

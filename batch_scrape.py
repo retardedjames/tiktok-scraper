@@ -10,6 +10,15 @@ import os
 import sys
 import time
 
+# Load .env if present (sets ADB_DEVICE etc.)
+_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env):
+    for _line in open(_env):
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+
 import queue as qmod
 import mobile_scrape as ms
 import preflight
@@ -20,12 +29,16 @@ def main():
     parser.add_argument("--n", type=int, default=5, help="Terms to grab per run")
     parser.add_argument("--scrolls", type=int, default=None,
                         help="Fixed scroll count per term (default: auto)")
-    parser.add_argument("--batch", type=int, default=30,
+    parser.add_argument("--batch", type=int, default=10,
                         help="Scrolls per batch in auto mode")
-    parser.add_argument("--min-likes", type=int, default=7_000,
+    parser.add_argument("--min-likes", type=int, default=5_000,
                         help="Auto-scroll stop threshold (default: 7000)")
     parser.add_argument("--no-db", action="store_true")
+    parser.add_argument("--debug", action="store_true", help="Save screenshots at each UI step")
     args = parser.parse_args()
+
+    if args.debug:
+        ms._DEBUG_SCREENSHOTS = True
 
     if not preflight.run_all():
         sys.exit(1)

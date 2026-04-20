@@ -18,6 +18,11 @@ import argparse
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DUMP_SCRIPT = os.path.join(SCRIPT_DIR, "tt_dump.py")
 
+# Set ADB_DEVICE to target a specific device, e.g.:
+#   ADB_DEVICE=127.0.0.1:5555  (on GCP2 itself, local Waydroid)
+#   ADB_DEVICE=34.153.25.251:5556  (from WSL2, remote)
+_ADB_DEVICE = os.environ.get("ADB_DEVICE", "")
+
 DUMP_SCRIPT_SRC = '''
 import json, gzip
 from mitmproxy import http
@@ -76,13 +81,48 @@ def write_dump_script():
         f.write(DUMP_SCRIPT_SRC)
 
 
+def _adb_base() -> list:
+    return ["adb", "-s", _ADB_DEVICE] if _ADB_DEVICE else ["adb"]
+
+
 def adb(cmd, check=False):
-    return subprocess.run(["adb"] + cmd.split(), capture_output=True, check=check)
+    return subprocess.run(_adb_base() + cmd.split(), capture_output=True, check=check)
 
 
 def adb_tap(x, y):
     adb(f"shell input tap {x} {y}")
     time.sleep(0.4)
+
+
+_DEBUG_SCREENSHOTS = False
+
+
+def screenshot(tag: str):
+    if not _DEBUG_SCREENSHOTS:
+        return
+    path = f"/tmp/screen_{tag}.png"
+    result = subprocess.run(_adb_base() + ["exec-out", "screencap", "-p"], capture_output=True)
+    with open(path, "wb") as f:
+        f.write(result.stdout)
+    print(f"[dbg] screenshot → {path}")
+
+
+def _foreground_app() -> str:
+    """Return the package name of the current focused window."""
+    r = subprocess.run(_adb_base() + ["shell", "dumpsys", "window"],
+                       capture_output=True)
+    out = r.stdout.decode() if r.stdout else ""
+    for line in out.splitlines():
+        if "mCurrentFocus" in line and "/" in line:
+            # e.g. mCurrentFocus=Window{abc com.tiktok.lite.go/...}
+            try:
+                pkg = line.split("/")[0].split()[-1]
+                if "{" in pkg:
+                    pkg = pkg.split("{")[-1]
+                return pkg
+            except Exception:
+                pass
+    return ""
 
 
 def start_mitmproxy():
@@ -127,82 +167,109 @@ def clear_proxy():
 
 def launch_tiktok():
     adb("shell am force-stop com.tiktok.lite.go")
-    time.sleep(1.0)
+    time.sleep(0.5)
     r = adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
     out = r.stdout.decode().strip() if r.stdout else ""
     print(f"[*] TikTok launch: exit={r.returncode} {out[:80]}")
     time.sleep(7.0)
+    screenshot("01_after_launch")
     # Dismiss "Allow contacts" dialog if present
     r2 = adb("shell dumpsys activity top")
-    if "permission" in r2.stdout.decode().lower() or "contacts" in r2.stdout.decode().lower():
+    top_out = r2.stdout.decode().lower() if r2.stdout else ""
+    if "permission" in top_out or "contacts" in top_out:
         print("[*] Dismissing permissions dialog...")
         adb("shell input tap 350 916")
         time.sleep(1.5)
+        screenshot("02_after_dismiss_dialog")
     # Confirm TikTok is in foreground
-    fg = adb("shell dumpsys activity recents")
-    fg_out = fg.stdout.decode() if fg.stdout else ""
-    running = "com.tiktok.lite" in fg_out
-    print(f"[*] TikTok in recents: {running}")
+    fg = _foreground_app()
+    print(f"[*] Foreground app: {fg}")
+    if "tiktok" not in fg:
+        print("[!] TikTok not in foreground after launch — retrying...")
+        adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
+        time.sleep(10.0)
+        screenshot("03_after_launch_retry")
+        fg = _foreground_app()
+        print(f"[*] Foreground app after retry: {fg}")
 
 
 def _ensure_tiktok_foreground():
     """Re-launch TikTok if it's no longer the foreground app."""
-    r = adb("shell dumpsys activity top")
-    if "com.tiktok.lite" not in r.stdout.decode():
-        print("[!] TikTok not in foreground — re-launching...")
+    fg = _foreground_app()
+    if "tiktok" not in fg:
+        print(f"[!] TikTok not in foreground (got: {fg}) — re-launching...")
         adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
-        time.sleep(7.0)
+        time.sleep(10.0)
+        fg = _foreground_app()
+        print(f"[*] Foreground after re-launch: {fg}")
 
 
 def search_and_sort(keyword: str, first: bool = True):
+    tag = keyword.replace(" ", "_")[:20]
+
     # Press Back a few times to dismiss any dialogs/videos
     print("[*] Pressing Back to clear any overlays...")
     for _ in range(3):
         adb("shell input keyevent KEYCODE_BACK")
-        time.sleep(0.5)
+        time.sleep(0.4)
+
     # Re-launch if Back presses exited TikTok entirely
     _ensure_tiktok_foreground()
+    screenshot(f"{tag}_A_before_search_tap")
+
     print("[*] Tapping search icon...")
     adb_tap(*SEARCH_ICON)
-    time.sleep(3.0)
+    time.sleep(2.0)
+    screenshot(f"{tag}_B_after_search_tap")
+
+    # Verify we're still in TikTok before typing
+    fg = _foreground_app()
+    if "tiktok" not in fg:
+        print(f"[!] Lost TikTok foreground after search tap (got: {fg}) — aborting term")
+        raise RuntimeError(f"TikTok lost foreground: {fg}")
 
     # Clear field and focus
     adb_tap(*SEARCH_FIELD)
-    time.sleep(0.2)
+    time.sleep(0.15)
     adb_tap(*SEARCH_CLEAR_BTN)
-    time.sleep(0.2)
+    time.sleep(0.15)
     adb_tap(*SEARCH_FIELD)
-    time.sleep(0.2)
+    time.sleep(0.15)
 
     print(f"[*] Typing '{keyword}'...")
     for ch in keyword:
         if ch == ' ':
-            subprocess.run(["adb", "shell", "input", "keyevent", "KEYCODE_SPACE"], capture_output=True)
+            subprocess.run(_adb_base() + ["shell", "input", "keyevent", "KEYCODE_SPACE"], capture_output=True)
         else:
-            subprocess.run(["adb", "shell", "input", "text", ch], capture_output=True)
+            subprocess.run(_adb_base() + ["shell", "input", "text", ch], capture_output=True)
         time.sleep(0.15)
     time.sleep(0.4)
+    screenshot(f"{tag}_C_after_typing")
+
     adb_tap(*SEARCH_BTN)
-    time.sleep(5.0)
+    time.sleep(4.5)
+    screenshot(f"{tag}_D_after_search_btn")
 
     print("[*] Opening filter popup...")
     adb_tap(*FILTER_ICON)
-    time.sleep(2.5)
+    time.sleep(2.0)
+    screenshot(f"{tag}_E_filter_popup")
 
     print("[*] Selecting 'Like count' sort...")
     adb_tap(*LIKE_COUNT_BTN)
-    time.sleep(0.8)
+    time.sleep(0.4)
 
     print("[*] Applying filter...")
     adb_tap(*APPLY_BTN)
-    time.sleep(5.0)
+    time.sleep(4.5)
+    screenshot(f"{tag}_F_after_apply")
 
 
 def scroll_results(scrolls: int):
     print(f"[*] Scrolling {scrolls} times...")
     for i in range(scrolls):
         adb("shell input swipe 360 1200 360 400 500")
-        time.sleep(1.5)
+        time.sleep(1.2)
         print(f"    scroll {i+1}/{scrolls}")
 
 
@@ -235,7 +302,7 @@ def _recent_likes(fname: str, n: int = 10) -> list[int]:
     return unique
 
 
-def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 30,
+def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 10,
                  min_likes: int = 7_000, below_threshold: int = 3) -> int:
     """
     Scroll in batches until `below_threshold` of the last 10 captured videos
@@ -250,7 +317,7 @@ def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 30,
 
         for _ in range(batch):
             adb("shell input swipe 360 1200 360 400 500")
-            time.sleep(1.5)
+            time.sleep(1.2)
         total += batch
 
         new_count = _jsonl_line_count(fname)

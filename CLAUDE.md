@@ -1,53 +1,90 @@
 # TikTok Scraper
 
 Scrapes TikTok's mobile API for all-time most-liked videos by keyword using
-mitmproxy interception on a Waydroid Android emulator (GCP2 VM).
+mitmproxy interception on Waydroid Android emulators running on GCP VMs.
 
 ## Architecture
 
-- **GCP2 VM** (`34.153.25.251`): Waydroid running TikTok Lite, VNC on :5900, ADB on :5556
-- **mitmproxy** (runs locally on WSL2): intercepts `/aweme/v1/general/search/single/`
-- **Oracle VPS** (`150.136.40.239`): PostgreSQL database (`tiktoks`)
-- **ADB UI automation**: searches TikTok, applies Like count sort, scrolls results
+- **GCP VMs** (one or more, identical setup): each runs Waydroid + TikTok Lite + mitmproxy + scraper
+- **mitmproxy** (runs ON the GCP VM): intercepts `/aweme/v1/general/search/single/`
+- **Oracle VPS** (`150.136.40.239`): PostgreSQL database (`tiktoks`) — shared across all VMs
+- **Queue**: PostgreSQL `terms` table on Oracle VPS — `FOR UPDATE SKIP LOCKED` ensures no two VMs grab the same term
+- **ADB**: local on each VM (`ADB_DEVICE=127.0.0.1:5555`), set via `.env`
+
+The scraper runs entirely on the GCP VM. WSL2 is only used for monitoring/debugging.
 
 ## Key Files
 
 | File | Purpose |
 |---|---|
-| `batch_scrape.py` | Main entry point — pulls N terms from queue, scrapes in one session |
+| `scrape_forever.py` | **Production entry point** — runs continuously, 1 term at a time, stops + writes SCRAPER_STATUS.txt on 2 consecutive failures |
+| `batch_scrape.py` | Test/dev entry point — pulls N terms and stops |
 | `mobile_scrape.py` | Core scraper: mitmproxy, ADB automation, scroll logic |
-| `queue.py` | SQLite queue for search terms |
+| `queue.py` | PostgreSQL queue — `grab_batch` uses `FOR UPDATE SKIP LOCKED` |
 | `db.py` | PostgreSQL models and upserts |
 | `preflight.py` | Pre-run checks (ADB connected, mitmproxy available, proxy clear) |
+| `run.sh` | Shell wrapper: loads `.env`, `git pull`, then runs `scrape_forever.py` |
+| `.env.example` | Template — copy to `.env` on each VM, set `ADB_DEVICE` |
 | `search_terms.txt` | ~3,524 search terms across 35+ categories |
-| `waydroid-start.sh` | Full Waydroid stack startup script (lives at `/usr/local/bin/` on GCP2) |
-| `WAYDROID_GCP2_SETUP.md` | Complete setup guide — read this first |
-| `HANDOFF.md` | Session handoff notes — current state and what was last fixed |
+| `waydroid-start.sh` | Full Waydroid stack startup (lives at `/usr/local/bin/` on each GCP VM) |
+| `WAYDROID_GCP2_SETUP.md` | Complete VM provisioning + daily operation guide |
+| `HANDOFF.md` | Session handoff notes |
+| `SCRAPER_STATUS.txt` | Written by `scrape_forever.py` when it stops due to failures — check this |
 
-## Running
+## Running on a GCP VM
 
 ```bash
-# Add terms to queue (first time)
-python3 queue.py import search_terms.txt search
+# One-time: copy and edit .env
+cp .env.example .env
+nano .env   # set ADB_DEVICE=127.0.0.1:5555
 
-# Run batch scrape (smart auto-scroll, stops at <7k likes)
-python3 batch_scrape.py --n 10
+# Production (continuous, auto-restart via run.sh)
+bash run.sh
 
-# Check queue
+# Test run (N terms then stop)
+python3 batch_scrape.py --n 3
+
+# Queue management (run from anywhere with DB access)
 python3 queue.py stats
-python3 queue.py reset   # unstick crashed in_progress terms
+python3 queue.py reset        # unstick crashed in_progress terms
+python3 queue.py reset-all    # reset ALL terms → pending (fresh start)
+python3 queue.py import search_terms.txt search  # add new terms
 ```
 
 ## Infrastructure
 
-- SSH to GCP2: `ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251`
-- ADB: `adb connect 34.153.25.251:5556`
-- VNC: `34.153.25.251:5900` (no password)
+- SSH to a GCP VM: `ssh -i ~/.ssh/jamescvermont jamescvermont@<VM_IP>`
+- VNC: `<VM_IP>:5900` (no password) — for monitoring only, not required
 - DB: `PGPASSWORD=app1dev psql -U app1_user -h 150.136.40.239 -d tiktoks`
+
+## Current GCP VMs
+
+| Name | IP | Status |
+|---|---|---|
+| GCP2 | `34.153.25.251` | Active — scraping |
+| GCP3 | `34.59.191.130` | Pending — clean install, not yet provisioned |
+
+SSH: `ssh -i ~/.ssh/jamescvermont jamescvermont@<IP>`
+
+## Monitoring a Running Scraper
+
+```bash
+# On the GCP VM — tail live output
+tail -f /tmp/scraper.log     # if started with: bash run.sh >> /tmp/scraper.log 2>&1
+
+# Check if it stopped due to failures
+cat ~/tiktok-scraper/SCRAPER_STATUS.txt
+
+# Queue state (from anywhere)
+python3 queue.py stats
+```
 
 ## Important Quirks
 
-- mitmproxy CA cert must be bind-mounted as a system cert on every Waydroid boot
-  (`waydroid-start.sh` handles this automatically — see `WAYDROID_GCP2_SETUP.md`)
-- ADB text input must be typed character-by-character (0.15s delay) on Waydroid
+- mitmproxy CA cert is bind-mounted as a system cert on every Waydroid boot
+  (`waydroid-start.sh` handles this automatically)
+- ADB text input typed character-by-character (0.15s delay) — Waydroid drops chars if sent all at once
 - TikTok launches via `am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity`
+- Foreground app detected via `dumpsys window | grep mCurrentFocus` — NOT `dumpsys activity top` (that returns background entries)
+- `scrape_forever.py` writes to `SCRAPER_STATUS.txt` on stop — check that file if the scraper appears to have died
+- `scroll_smart` stops when ≥3 of last 10 captured videos are under `min_likes` (default 5k); batch size 10 scrolls

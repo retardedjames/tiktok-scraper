@@ -1,121 +1,113 @@
 # Handoff — TikTok Scraper Session 2026-04-20
 
-## Current State: Ready to Scrape
+## Current State
 
-Everything is configured and working. The previous session debugged the full stack
-from scratch on GCP2 Waydroid and got successful mitmproxy interception confirmed.
+GCP2 is fully operational running the scraper natively. End-to-end test confirmed:
+results are saving to Oracle VPS PostgreSQL. Queue has 3,503 pending terms.
 
----
-
-## What Was Fixed This Session
-
-### 1. mitmproxy CA cert (critical)
-- `base.objection.apk` is **byte-for-byte identical** to `base.apk` — it was never patched.
-- User CA store (`/data/misc/user/0/cacerts-added/`) is ignored by TikTok (SDK 35 target).
-- **Fix:** bind-mount a patched cacerts dir over `/system/etc/security/cacerts/` via lxc-attach.
-- This is now **automated in `waydroid-start.sh`** — runs on every Waydroid boot.
-- Requires `/sdcard/mitmproxy-ca.pem` to exist on the device (already pushed, persists in /data).
-
-### 2. TikTok launch command
-- `monkey` command was launching Google Search app instead of TikTok on Waydroid.
-- **Fix:** `am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity`
-- Already updated in `mobile_scrape.py`.
-
-### 3. ADB text input
-- `input text 'street art'` drops characters on Waydroid (slower than real phone).
-- **Fix:** type character-by-character with 0.15s delay between each.
-- Already updated in `mobile_scrape.py`.
-
-### 4. UI coordinates
-- All coordinates verified by screenshot analysis. Already updated in `mobile_scrape.py`.
-- See `WAYDROID_GCP2_SETUP.md` for the full verified coordinate table.
+**Next task for a new session:** Provision GCP3 (`34.59.191.130`) — clean Ubuntu 25.10,
+nothing installed yet. Follow `WAYDROID_GCP2_SETUP.md` top to bottom.
 
 ---
 
-## To Start a New Scrape Session
+## Architecture (as of this session)
 
-### Step 1 — Connect from WSL2
-
-```bash
-adb kill-server
-adb connect 34.153.25.251:5556
-adb -s 34.153.25.251:5556 shell getprop sys.boot_completed  # must be 1
-```
-
-### Step 2 — Verify cert is mounted (do this every session)
-
-```bash
-ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251 \
-  "sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- ls /system/etc/security/cacerts/c8750f0d.0"
-```
-
-If the file is missing (e.g. after a container restart that predates the `waydroid-start.sh` fix):
-
-```bash
-ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251 "
-  sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c '
-    mkdir -p /tmp/cacerts
-    cp /system/etc/security/cacerts/* /tmp/cacerts/
-    cp /sdcard/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0
-    chmod 644 /tmp/cacerts/c8750f0d.0
-    mount --bind /tmp/cacerts /system/etc/security/cacerts
-    echo done
-  '
-"
-```
-
-### Step 3 — Check queue, add terms if needed
-
-```bash
-cd /home/james/tiktoks
-python3 emulator/queue.py stats
-python3 emulator/queue.py reset   # unstick any in_progress from a crashed session
-
-# Import more terms if queue is low:
-# python3 emulator/queue.py import emulator/search_terms.txt search
-```
-
-### Step 4 — Run the batch scraper
-
-```bash
-cd /home/james/tiktoks
-python3 emulator/batch_scrape.py --n 10
-```
-
-- Uses smart auto-scroll: stops when 3 of last 10 captured videos have <7k likes.
-- No `--scrolls` flag needed (auto mode is correct).
-- Watch VNC at `34.153.25.251:5900` (no password) to monitor progress.
+- **Scraper runs ON each GCP VM** — not from WSL2. WSL2 is monitoring/debugging only.
+- **mitmproxy runs on the GCP VM** alongside Waydroid.
+- **Queue is PostgreSQL** on Oracle VPS (`terms` table, `FOR UPDATE SKIP LOCKED`).
+- **ADB device on VM:** `127.0.0.1:5556` (socat proxy — use 5556, not 5555 directly).
+- **Code deployment:** rsync from WSL2 (git clone doesn't work — no GitHub auth on VMs).
+- **Notifications:** ntfy.sh topic `retardedjames-tiktok` — install app on phone, subscribe.
 
 ---
 
-## Queue State at End of This Session
+## GCP VM Fleet
 
-- `street art` — marked **done** (captured ~20 videos manually but NOT saved to DB;
-  safe to re-scrape by resetting the queue if desired)
-- `gym motivation`, `night cooking`, `ocean sunset` — **pending**
+| Name | IP | Status |
+|---|---|---|
+| GCP2 | `34.153.25.251` | Active — fully set up, tested, ready to run `scrape_forever.py` |
+| GCP3 | `34.59.191.130` | Pending — clean Ubuntu 25.10, nothing installed |
 
-Run `python3 emulator/queue.py reset` first to reset any stuck states.
+SSH: `ssh -i ~/.ssh/jamescvermont jamescvermont@<IP>`
+
+---
+
+## What Changed This Session
+
+### 1. Scraper runs on GCP VM (not WSL2)
+- `ADB_DEVICE=127.0.0.1:5556` in `.env` on each VM
+- mitmproxy cert must be generated on the VM (`mitmdump` run once to create `~/.mitmproxy/`)
+- Cert pushed to `/sdcard/mitmproxy-ca.pem` on Android; `waydroid-start.sh` bind-mounts it
+
+### 2. Queue migrated SQLite → PostgreSQL
+- `terms` table on Oracle VPS (same DB as videos/authors)
+- `FOR UPDATE SKIP LOCKED` — concurrent-safe for multiple VMs
+- 3,503 pending, 10 done
+
+### 3. `scrape_forever.py` — production continuous runner
+- Pulls 1 term at a time, loops forever
+- Stops + writes `SCRAPER_STATUS.txt` on 2 consecutive failures
+- Sends ntfy.sh push notifications on start/stop/failure/heartbeat-every-50-terms
+- Per-term notifications: set `NTFY_PER_TERM=1` in `.env` to enable
+
+### 4. `run.sh` — start wrapper
+- Loads `.env`, does `git pull --ff-only` (once git auth is set up), runs `scrape_forever.py`
+- For now: rsync to deploy, then `bash run.sh` or `PATH=$PATH:$HOME/.local/bin python3 scrape_forever.py`
+
+### 5. Timing optimizations (~2× faster per term)
+- Screenshots opt-in via `--debug` flag (saves ~10s/term)
+- Various delays reduced; scroll batch 30→10; min-likes default 7k→5k
+
+### 6. Foreground detection fixed
+- Uses `dumpsys window | grep mCurrentFocus` — NOT `dumpsys activity top`
+- Old method always returned `com.android.launcher3`, causing constant spurious relaunches
+
+### 7. ntfy.sh notifications
+- Topic: `retardedjames-tiktok`
+- Install ntfy app on phone → subscribe to that topic
+- No account needed
+
+---
+
+## To Start Scraping on GCP2 (already set up)
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251
+# If Waydroid isn't running after a reboot:
+sudo bash /usr/local/bin/waydroid-start.sh
+
+# Run the scraper
+cd ~/tiktok-scraper
+PATH=$PATH:$HOME/.local/bin python3 scrape_forever.py
+# Or to test first:
+PATH=$PATH:$HOME/.local/bin python3 batch_scrape.py --n 2
+```
+
+---
+
+## To Provision GCP3 (next task)
+
+Follow `WAYDROID_GCP2_SETUP.md` in order. Key GCP3-specific steps:
+
+1. All steps are identical to GCP2 — same OS, same kernel, same packages
+2. **Step 7** — generate mitmproxy cert ON GCP3 (cannot copy from GCP2)
+3. **Step 10** — use Option A (session transfer from GCP2) to avoid manual TikTok login
+4. **Step 12** — rsync code from WSL2, set `VM_NAME=GCP3` in `.env`
+5. Run `batch_scrape.py --n 2` to confirm end-to-end before starting `scrape_forever.py`
 
 ---
 
 ## Known Gotchas
 
-- **"No internet connection" in TikTok** = mitmproxy is set as proxy but the cert
-  bind-mount is not active. Check Step 2 above.
-- **Characters dropped when typing** = the 0.15s delay in mobile_scrape.py handles this,
-  but if you're doing manual adb taps use the char-by-char Python snippet.
-- **Filter popup Apply button** = y≈778 (near top of the panel at y=722, NOT y=975 as
-  originally coded). Tapping too high hits the search results behind the panel.
-- **ADB reverse tunnel** = must be re-run each session:
-  `adb -s 34.153.25.251:5556 reverse tcp:8080 tcp:8080`
-  The batch scraper calls `set_proxy()` which does this automatically.
-- **Contacts dialog on first TikTok launch** = tap "Don't allow" at (350, 916).
-  `launch_tiktok()` in mobile_scrape.py now handles this automatically.
-
----
-
-## Files Modified This Session
-
-- `emulator/mobile_scrape.py` — coordinates, launch cmd, typing, delays
-- `emulator/WAYDROID_GCP2_SETUP.md` — cert approach, coordinates, troubleshooting
-- `/usr/local/bin/waydroid-start.sh` on GCP2 — auto cert bind-mount on boot
+- **ADB port is 5556, not 5555** — socat proxy listens on 5556 even locally on the VM
+- **Each VM needs its own mitmproxy cert** — cert + private key are a matched pair;
+  copying a cert from another VM won't work (TLS handshake fails, TikTok shows "No internet")
+- **mitmdump PATH** — installed at `~/.local/bin/mitmdump`; scripts handle this internally
+  but shell commands need `PATH=$PATH:$HOME/.local/bin`
+- **SCRAPER_STATUS.txt** — written in `~/tiktok-scraper/` on the VM when scraper stops;
+  you'll also get an ntfy push notification so you don't need to check manually
+- **Cert bind-mount** — survives until Waydroid container restarts; `waydroid-start.sh`
+  re-applies on every boot
+- **Filter popup Apply button** — y≈778 (top of panel), NOT y≈975
+- **Proxy must be cleared** — `clear_proxy()` called automatically; if mitmproxy dies
+  mid-run and proxy isn't cleared, Android loses internet on next boot
