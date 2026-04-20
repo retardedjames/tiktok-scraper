@@ -2,40 +2,22 @@
 import json, gzip
 from mitmproxy import http
 
-def request(flow: http.HTTPFlow):
-    host = flow.request.host
-    if not ("tiktok" in host or "tiktokv" in host):
-        return
-    if "search" in flow.request.path:
-        q = dict(flow.request.query)
-        print(f"[req] {flow.request.path} kw={q.get('keyword','')!r} sort={q.get('sort_type','?')} cursor={q.get('cursor','?')}", flush=True)
-
-
 def response(flow: http.HTTPFlow):
     host = flow.request.host
     if not ("tiktok" in host or "tiktokv" in host):
         return
     path = flow.request.path
+    q = dict(flow.request.query)
+    kw = q.get("keyword", "")
+    sort_type = q.get("sort_type", "rel")
+    cursor = q.get("cursor", "0")
+
+    # Log every TikTok search path so we can find cursor=0
+    if "search" in path:
+        print(f"[path] {path} kw={kw!r} sort={sort_type} cursor={cursor}", flush=True)
+
     is_known = "search/item" in path or "search/stream" in path or "search/single" in path
     if not is_known:
-        # Sniff any other TikTok path for aweme lists so we can find cursor=0
-        try:
-            body_peek = flow.response.content
-            enc_peek = flow.response.headers.get("content-encoding", "")
-            if "br" in enc_peek:
-                import brotli as _br; body_peek = _br.decompress(body_peek)
-            elif "gzip" in enc_peek:
-                body_peek = gzip.decompress(body_peek)
-            data_peek = json.loads(body_peek)
-            has_videos = (data_peek.get("aweme_list") or data_peek.get("item_list")
-                          or data_peek.get("video_list"))
-            if has_videos:
-                q = dict(flow.request.query)
-                print(f"[mitmproxy] FOUND VIDEOS on non-search path: {path} "
-                      f"kw={q.get('keyword','')!r} sort={q.get('sort_type','?')} "
-                      f"cursor={q.get('cursor','?')} count={len(has_videos)}", flush=True)
-        except Exception:
-            pass
         return
 
     query = dict(flow.request.query)
