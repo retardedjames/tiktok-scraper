@@ -23,49 +23,6 @@ DUMP_SCRIPT = os.path.join(SCRIPT_DIR, "tt_dump.py")
 #   ADB_DEVICE=34.153.25.251:5556  (from WSL2, remote)
 _ADB_DEVICE = os.environ.get("ADB_DEVICE", "")
 
-DUMP_SCRIPT_SRC = '''
-import json, gzip
-from mitmproxy import http
-
-def response(flow: http.HTTPFlow):
-    host = flow.request.host
-    if not ("tiktok" in host or "tiktokv" in host):
-        return
-    path = flow.request.path
-    if "search/item" not in path and "search/stream" not in path and "search/single" not in path:
-        return
-
-    body = flow.response.content
-    enc = flow.response.headers.get("content-encoding", "")
-    if "gzip" in enc:
-        try:
-            body = gzip.decompress(body)
-        except Exception:
-            pass
-
-    try:
-        data = json.loads(body)
-    except Exception:
-        return
-
-    query = dict(flow.request.query)
-    keyword = query.get("keyword", "")
-    sort_type = query.get("sort_type", "rel")
-    cursor = query.get("cursor", "0")
-
-    raw_list = data.get("aweme_list") or data.get("item_list") or data.get("video_list") or []
-    if not raw_list:
-        components = data.get("data") or []
-        raw_list = [c["aweme_info"] for c in components if "aweme_info" in c]
-
-    if raw_list:
-        fname = f"/tmp/tt_{keyword}_{sort_type}.jsonl"
-        with open(fname, "a") as f:
-            for v in raw_list:
-                f.write(json.dumps(v) + "\\n")
-        print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: +{len(raw_list)} videos", flush=True)
-'''
-
 # UI coordinates (720x1612 screen) — verified against Waydroid screenshots
 SEARCH_ICON      = (651, 97)    # magnifying glass (top-right, always visible on FYP)
 SEARCH_FIELD     = (325, 91)    # search input field
@@ -74,11 +31,6 @@ SEARCH_BTN       = (633, 91)    # pink "Search" button (top-right of search bar)
 FILTER_ICON      = (700, 173)   # slider/filter icon (right of tab bar)
 LIKE_COUNT_BTN   = (315, 1420)  # "Like count" sort button in filter popup
 APPLY_BTN        = (670, 778)   # "Apply" button in filter popup header
-
-
-def write_dump_script():
-    with open(DUMP_SCRIPT, "w") as f:
-        f.write(DUMP_SCRIPT_SRC)
 
 
 def _adb_base() -> list:
@@ -126,7 +78,8 @@ def _foreground_app() -> str:
 
 
 def start_mitmproxy():
-    write_dump_script()
+    if not os.path.exists(DUMP_SCRIPT):
+        raise RuntimeError(f"mitmproxy addon missing: {DUMP_SCRIPT}")
     subprocess.run("fuser -k 8080/tcp 2>/dev/null || true", shell=True)
     time.sleep(0.3)
     proc = subprocess.Popen(
