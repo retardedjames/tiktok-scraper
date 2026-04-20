@@ -33,6 +33,15 @@ LIKE_COUNT_BTN   = (315, 1420)  # "Like count" sort button in filter popup
 APPLY_BTN        = (670, 778)   # "Apply" button in filter popup header
 
 
+def safe_keyword(k: str) -> str:
+    """Slash-safe keyword for use in filesystem paths.
+
+    Must match tt_dump.safe_keyword exactly — writer (mitmproxy addon) and
+    reader (this module) both consume it.
+    """
+    return k.replace("/", "_").replace("\\", "_")
+
+
 def _adb_base() -> list:
     return ["adb", "-s", _ADB_DEVICE] if _ADB_DEVICE else ["adb"]
 
@@ -262,7 +271,7 @@ def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 10,
     TikTok stops loading new content.
     Returns total scroll count.
     """
-    fname = f"/tmp/tt_{keyword}_{sort_type}.jsonl"
+    fname = f"/tmp/tt_{safe_keyword(keyword)}_{sort_type}.jsonl"
     total = 0
 
     while True:
@@ -298,7 +307,7 @@ def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 10,
 
 
 def load_results(keyword: str, sort_type: str = "1") -> list[dict]:
-    fname = f"/tmp/tt_{keyword}_{sort_type}.jsonl"
+    fname = f"/tmp/tt_{safe_keyword(keyword)}_{sort_type}.jsonl"
     if not os.path.exists(fname):
         return []
     seen = set()
@@ -337,7 +346,7 @@ def main():
     keyword = args.phrase
 
     for sort_type in ["1", "rel"]:
-        fname = f"/tmp/tt_{keyword}_{sort_type}.jsonl"
+        fname = f"/tmp/tt_{safe_keyword(keyword)}_{sort_type}.jsonl"
         if os.path.exists(fname):
             os.remove(fname)
 

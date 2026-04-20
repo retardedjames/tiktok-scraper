@@ -2,6 +2,15 @@ import json
 from mitmproxy import http
 
 
+def safe_keyword(k: str) -> str:
+    """Slash-safe keyword for use in filesystem paths.
+
+    Must match mobile_scrape.safe_keyword exactly — this addon writes the
+    JSONL and mobile_scrape reads it back.
+    """
+    return k.replace("/", "_").replace("\\", "_")
+
+
 def _dechunk(data: bytes) -> bytes:
     """Strip HTTP chunked-transfer-encoding framing (hex-length\\r\\n + bytes\\r\\n ... 0\\r\\n\\r\\n).
 
@@ -75,7 +84,7 @@ def response(flow: http.HTTPFlow):
     except Exception as e:
         enc = flow.response.headers.get("content-encoding", "")
         ctype = flow.response.headers.get("content-type", "")
-        raw_dump = f"/tmp/tt_raw_{keyword}_{sort_type}_cursor{cursor}.bin"
+        raw_dump = f"/tmp/tt_raw_{safe_keyword(keyword)}_{sort_type}_cursor{cursor}.bin"
         try:
             with open(raw_dump, "wb") as rf:
                 rf.write(flow.response.content or b"")
@@ -91,7 +100,7 @@ def response(flow: http.HTTPFlow):
         videos.extend(_extract_videos(d))
 
     if videos:
-        fname = f"/tmp/tt_{keyword}_{sort_type}.jsonl"
+        fname = f"/tmp/tt_{safe_keyword(keyword)}_{sort_type}.jsonl"
         with open(fname, "a") as f:
             for v in videos:
                 f.write(json.dumps(v) + "\n")

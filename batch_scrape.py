@@ -61,7 +61,7 @@ def main():
 
             # Clear previous capture file
             for sort_type in ["1", "rel"]:
-                fname = f"/tmp/tt_{keyword}_{sort_type}.jsonl"
+                fname = f"/tmp/tt_{ms.safe_keyword(keyword)}_{sort_type}.jsonl"
                 if os.path.exists(fname):
                     os.remove(fname)
 
