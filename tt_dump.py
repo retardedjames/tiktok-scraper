@@ -10,23 +10,33 @@ def response(flow: http.HTTPFlow):
     if "search/item" not in path and "search/stream" not in path and "search/single" not in path:
         return
 
-    body = flow.response.content
-    enc = flow.response.headers.get("content-encoding", "")
-    if "gzip" in enc:
-        try:
-            body = gzip.decompress(body)
-        except Exception:
-            pass
-
-    try:
-        data = json.loads(body)
-    except Exception:
-        return
-
     query = dict(flow.request.query)
     keyword = query.get("keyword", "")
     sort_type = query.get("sort_type", "rel")
     cursor = query.get("cursor", "0")
+
+    body = flow.response.content
+    enc = flow.response.headers.get("content-encoding", "")
+
+    if "br" in enc:
+        try:
+            import brotli
+            body = brotli.decompress(body)
+        except Exception as e:
+            print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: brotli decompress failed: {e}", flush=True)
+            return
+    elif "gzip" in enc:
+        try:
+            body = gzip.decompress(body)
+        except Exception as e:
+            print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: gzip decompress failed: {e}", flush=True)
+            return
+
+    try:
+        data = json.loads(body)
+    except Exception as e:
+        print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: JSON parse failed (enc={enc!r}): {e}", flush=True)
+        return
 
     raw_list = data.get("aweme_list") or data.get("item_list") or data.get("video_list") or []
     if not raw_list:
@@ -39,3 +49,5 @@ def response(flow: http.HTTPFlow):
             for v in raw_list:
                 f.write(json.dumps(v) + "\n")
         print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: +{len(raw_list)} videos", flush=True)
+    else:
+        print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: matched but 0 videos (keys={list(data.keys())[:8]})", flush=True)
