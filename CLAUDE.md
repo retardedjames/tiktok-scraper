@@ -87,4 +87,4 @@ python3 queue.py stats
 - TikTok launches via `am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity`
 - Foreground app detected via `dumpsys window | grep mCurrentFocus` — NOT `dumpsys activity top` (that returns background entries)
 - `scrape_forever.py` writes to `SCRAPER_STATUS.txt` on stop — check that file if the scraper appears to have died
-- `scroll_smart` scrolls up to `max_scrolls` (default 33) total; stops early if ≥3 of last 10 captured videos are under `min_likes` (default 5k); batch size 10 scrolls
+- `scroll_smart` always scrolls to `max_scrolls` (default 33); only stops early if TikTok stops returning new content; like-count threshold removed because TikTok's sort is imprecise

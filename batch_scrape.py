@@ -31,8 +31,6 @@ def main():
                         help="Fixed scroll count per term (default: auto)")
     parser.add_argument("--batch", type=int, default=10,
                         help="Scrolls per batch in auto mode")
-    parser.add_argument("--min-likes", type=int, default=5_000,
-                        help="Auto-scroll stop threshold (default: 7000)")
     parser.add_argument("--no-db", action="store_true")
     parser.add_argument("--debug", action="store_true", help="Save screenshots at each UI step")
     args = parser.parse_args()
@@ -73,7 +71,7 @@ def main():
                 if args.scrolls is not None:
                     ms.scroll_results(args.scrolls)
                 else:
-                    ms.scroll_smart(keyword, batch=args.batch, min_likes=args.min_likes)
+                    ms.scroll_smart(keyword, batch=args.batch)
 
                 raw_videos = ms.load_results(keyword)
                 total = len(raw_videos)

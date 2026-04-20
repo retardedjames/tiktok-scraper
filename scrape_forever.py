@@ -103,7 +103,6 @@ def main():
     signal.signal(signal.SIGINT, _handle_signal)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--min-likes", type=int, default=5_000)
     parser.add_argument("--debug", action="store_true", help="Save screenshots at each UI step")
     args = parser.parse_args()
 
@@ -152,7 +151,7 @@ def main():
                     tiktok_launched = True
 
                 ms.search_and_sort(keyword)
-                ms.scroll_smart(keyword, min_likes=args.min_likes)
+                ms.scroll_smart(keyword)
 
                 raw_videos = ms.load_results(keyword)
                 total = len(raw_videos)
