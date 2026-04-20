@@ -1,9 +1,13 @@
 # TikTok Scraper — VM Operations Guide
 
-**This is the primary reference for all new VMs.** New VMs are created by cloning a
-machine image of GCP2 (or any healthy fleet VM) in the GCP Console — not by provisioning
-from scratch. See `WAYDROID_GCP2_SETUP.md` if you need to understand how the original VM
-was built, but you will not follow those steps again.
+**This is the primary reference for all new VMs and for Claude agents doing VM work.**
+
+New VMs are created from a GCP machine image of GCP2 — not provisioned from scratch.
+When the user gives you a new VM's IP (and name, e.g. "GCP4"), you run the provisioning
+runbook below end-to-end without asking for help. The user should not have to do anything.
+
+SSH key: `~/.ssh/jamescvermont`
+SSH user: `jamescvermont`
 
 ---
 
@@ -39,7 +43,6 @@ VNC: `<VM_IP>:5900` (no password) — for monitoring/login only
 - Machine: e2-standard-2 (2 vCPU, 4 GB RAM), x86_64
 - OS: Ubuntu 25.10 (Questing), kernel 6.17.x-gcp
 - User: `jamescvermont` (UID 1001), passwordless sudo
-- x86_64 required — ARM64 VMs cannot run Waydroid
 
 ### Oracle VPS — Database + Queue
 
@@ -60,77 +63,148 @@ terms          — scrape queue (term, type, status, videos_saved, ...) — shar
 
 ---
 
-## Creating a New VM from a Clone (~5 min)
+## Provisioning Runbook (Claude executes this, not the user)
 
-### 1. Take a machine image in GCP Console
+Given: a new VM IP and name (e.g. `34.x.x.x`, `GCP4`). Execute each step in order,
+verify before proceeding, and do not stop until `scrape_forever.py` is confirmed running.
 
-Stop the scraper on GCP2 first (clean state):
-```bash
-ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251 "kill \$(pgrep -f scrape_forever) 2>/dev/null; echo done"
-python3 queue.py reset   # unstick any in_progress terms
-```
-
-In GCP Console: **Compute Engine → Storage → Machine images → Create machine image**
-→ select source instance → create. Use machine image (not disk snapshot) — it captures
-full instance config.
-
-Launch a new VM from the machine image. Same region/zone as source is fine.
-
-### 2. SSH into the new VM and update `.env`
+### Step 1 — Confirm SSH access
 
 ```bash
-ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP>
-nano ~/tiktok-scraper/.env
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "uname -a && echo OK"
 ```
 
-Change `VM_NAME` to the new VM's name (e.g. `GCP4`). Everything else stays the same:
+Expected: Ubuntu 25.10 / kernel 6.17.x-gcp. If SSH fails, the VM isn't ready yet — wait
+and retry. Do not proceed until this succeeds.
 
+### Step 2 — Pull latest code and install startup script
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
+  cd ~/tiktok-scraper && git pull
+  sudo cp waydroid-start.sh /usr/local/bin/waydroid-start.sh
+  sudo chmod +x /usr/local/bin/waydroid-start.sh
+"
 ```
+
+### Step 3 — Write `.env`
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "cat > ~/tiktok-scraper/.env << 'EOF'
 ADB_DEVICE=127.0.0.1:5556
-VM_NAME=GCP4
+VM_NAME=<NEW_VM_NAME>
 NTFY_TOPIC=retardedjames-tiktok
 NTFY_PER_TERM=0
+EOF"
 ```
 
-### 3. Pull latest code
+### Step 4 — Start Waydroid
 
 ```bash
-cd ~/tiktok-scraper && git pull
-sudo cp waydroid-start.sh /usr/local/bin/waydroid-start.sh
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> \
+  "sudo bash /usr/local/bin/waydroid-start.sh 2>&1"
 ```
 
-### 4. Start Waydroid
+Wait for `[*] All done!`. The script takes ~2 min. If it exits without that line, check
+`/tmp/sway.log` and `/tmp/waydroid_session.log` on the VM and retry.
+
+### Step 5 — Wait for Android to fully boot
 
 ```bash
-sudo bash /usr/local/bin/waydroid-start.sh
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> \
+  "until adb -s 127.0.0.1:5556 shell getprop sys.boot_completed 2>/dev/null | grep -q 1; do sleep 3; done && echo booted"
 ```
 
-Wait for `[*] All done!`. If VNC is blank after, run:
-```bash
-sudo -u jamescvermont env XDG_RUNTIME_DIR=/run/user/1001 WAYLAND_DISPLAY=wayland-1 \
-    waydroid show-full-ui
-```
+Timeout: 3 minutes. If it never boots, check `journalctl -u waydroid-container` on the VM.
 
-### 5. Verify
+### Step 6 — Verify cert is mounted
 
 ```bash
-adb connect 127.0.0.1:5556
-adb -s 127.0.0.1:5556 shell getprop sys.boot_completed          # must be 1
-adb -s 127.0.0.1:5556 shell pm list packages | grep tiktok      # must appear
-sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- \
-    ls /system/etc/security/cacerts/c8750f0d.0                   # cert must exist
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> \
+  "sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- \
+   ls /system/etc/security/cacerts/c8750f0d.0 && echo cert_ok"
 ```
 
-Open VNC (`<NEW_VM_IP>:5900`) and launch TikTok — should open to the feed with no login
-prompt. If it asks to log in, the session expired; see **Session Transfer** below.
+If `cert_ok` is not printed, the bind-mount failed. Re-run `waydroid-start.sh` and retry.
 
-### 6. Start the scraper
+### Step 7 — Verify TikTok session
+
+Launch TikTok and take a screenshot to check whether it opens to the feed or the login screen:
 
 ```bash
-cd ~/tiktok-scraper
-bash run.sh >> /tmp/scraper.log 2>&1 &
-tail -f /tmp/scraper.log
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
+  adb -s 127.0.0.1:5556 shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity
+  sleep 8
+  adb -s 127.0.0.1:5556 shell screencap -p /sdcard/screen.png
+  adb -s 127.0.0.1:5556 pull /sdcard/screen.png /tmp/screen_verify.png
+"
 ```
+
+View the screenshot (`/tmp/screen_verify.png`) to determine the result:
+- **Feed visible (videos, FYP)** → session is good, proceed to Step 8
+- **Login screen or empty / "Sign up" prompt** → session expired, do **Session Transfer** below before Step 8
+
+### Step 8 — Reset stuck queue terms
+
+The source VM may have had in-progress terms at snapshot time. Unstick them:
+
+```bash
+cd ~/tiktok-scraper && python3 queue.py reset
+```
+
+### Step 9 — Start the scraper
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> \
+  "cd ~/tiktok-scraper && nohup bash run.sh >> /tmp/scraper.log 2>&1 &"
+```
+
+Wait 15 seconds, then confirm it's running:
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> \
+  "tail -20 /tmp/scraper.log"
+```
+
+Expected output: scraper started line, mitmproxy launched, first term grabbed. If the log
+shows errors or `SCRAPER_STATUS.txt` was written, diagnose before reporting success.
+
+### Step 10 — Update fleet table
+
+Update the VM fleet table in this file (`CLONE_SETUP.md`) to add the new VM:
+
+```
+| GCP4 | `34.x.x.x` | Active — scraping |
+```
+
+---
+
+## Session Transfer (if Step 7 shows login screen)
+
+```bash
+# Export from GCP2 (pipe to host /tmp — writing -czf /tmp/... inside lxc-attach
+# targets the container's /tmp, not the host's /tmp)
+ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251 \
+  "sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- \
+   tar -czf - -C /data/data com.tiktok.lite.go | sudo tee /tmp/tiktok_session.tar.gz > /dev/null"
+
+# Copy GCP2 → WSL2 → new VM
+scp -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251:/tmp/tiktok_session.tar.gz /tmp/
+scp -i ~/.ssh/jamescvermont /tmp/tiktok_session.tar.gz jamescvermont@<NEW_VM_IP>:/tmp/
+
+# Restore on new VM
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
+  sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c '
+    am force-stop com.tiktok.lite.go
+    rm -rf /data/data/com.tiktok.lite.go
+    tar -xzf /tmp/tiktok_session.tar.gz -C /data/data
+    chown -R 10145:10145 /data/data/com.tiktok.lite.go
+    chmod -R 771 /data/data/com.tiktok.lite.go
+  '
+"
+```
+
+Re-take the screenshot (Step 7) to confirm the feed is now visible before continuing.
 
 ---
 
@@ -141,8 +215,8 @@ tail -f /tmp/scraper.log
 | Waydroid + Android images | Inherited |
 | libhoudini (ARM translation) | Inherited |
 | TikTok Lite APK | Inherited |
-| TikTok session (logged in) | Inherited — cert + private key are a matched pair |
-| mitmproxy cert + private key | **Do not regenerate** — both come from source, they match |
+| TikTok session (logged in) | Inherited — verify in Step 7 |
+| mitmproxy cert + private key | **Do not regenerate** — matched pair from source |
 | ADB key (authorized in Android) | Inherited |
 | Screen dimensions (720×1612 @ 280dpi) | Inherited |
 | Python packages (mitmproxy, sqlalchemy, etc.) | Inherited |
@@ -151,7 +225,7 @@ tail -f /tmp/scraper.log
 
 ## Every Boot — Starting the Waydroid Stack
 
-Waydroid does not autostart. After any VM boot (including first launch of a clone):
+Waydroid does not autostart. After any VM reboot:
 
 ```bash
 sudo bash /usr/local/bin/waydroid-start.sh
@@ -196,7 +270,7 @@ tail -f /tmp/scraper.log
 ```
 
 `run.sh` does `git pull --ff-only` before each start. If the scraper stops due to
-failures, `SCRAPER_STATUS.txt` explains why and you'll get an ntfy push notification.
+failures, `SCRAPER_STATUS.txt` explains why and an ntfy push notification fires.
 
 ### Test run (N terms then stop)
 
@@ -216,47 +290,10 @@ python3 queue.py import search_terms.txt search   # add new terms
 
 ---
 
-## Session Transfer (if TikTok asks to log in)
-
-Clone sessions can expire. Transfer a fresh session from a running VM:
-
-```bash
-# Step 1: export from source VM (pipe to host /tmp — NOT inside lxc-attach)
-ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251 \
-  "sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- \
-   tar -czf - -C /data/data com.tiktok.lite.go | sudo tee /tmp/tiktok_session.tar.gz > /dev/null"
-
-# Step 2: copy via WSL2
-scp -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251:/tmp/tiktok_session.tar.gz /tmp/
-scp -i ~/.ssh/jamescvermont /tmp/tiktok_session.tar.gz jamescvermont@<NEW_VM_IP>:/tmp/
-
-# Step 3: restore on new VM (Waydroid must be running)
-ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
-  sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c '
-    am force-stop com.tiktok.lite.go
-    rm -rf /data/data/com.tiktok.lite.go
-    tar -xzf /tmp/tiktok_session.tar.gz -C /data/data
-    chown -R 10145:10145 /data/data/com.tiktok.lite.go
-    chmod -R 771 /data/data/com.tiktok.lite.go
-  '
-"
-```
-
-Verify via VNC — TikTok should open to the feed. If it still asks to log in, the session
-has expired entirely; log in manually via VNC (slider captcha, click and drag).
-
-**Note:** `/tmp` inside `lxc-attach` refers to the container's `/tmp`. Always pipe to the
-host via `tee` as shown above — writing `-czf /tmp/...` directly creates the file inside
-the container where scp can't reach it.
-
----
-
 ## ntfy Notifications
 
-The scraper posts push notifications to ntfy.sh topic `retardedjames-tiktok`.
-
-To receive them: install the ntfy app → tap **+** → topic: `retardedjames-tiktok`.
-Or check in browser: `https://ntfy.sh/retardedjames-tiktok`
+Topic: `retardedjames-tiktok` — install ntfy app, subscribe to that topic.
+Browser: `https://ntfy.sh/retardedjames-tiktok`
 
 | Event | Priority |
 |---|---|
@@ -265,8 +302,6 @@ Or check in browser: `https://ntfy.sh/retardedjames-tiktok`
 | Scraper stopped — 2 consecutive failures | **High (buzzes)** |
 | Heartbeat every 50 terms | Low (silent) |
 | Scraper stopped cleanly | Low (silent) |
-
-Set `NTFY_PER_TERM=1` in `.env` to get a notification on every term (noisy — off by default).
 
 ---
 
@@ -300,8 +335,7 @@ Set `NTFY_PER_TERM=1` in `.env` to get a notification on every term (noisy — o
    - Filter icon → "Like count" → Apply
 5. `scroll_smart` scrolls in batches of 10; stops when ≥3 of the last 10 captured
    videos have <5,000 likes, or no new content loads
-6. mitmproxy intercepts `/aweme/v1/general/search/single/` responses, writes to
-   `/tmp/tt_{keyword}_1.jsonl`
+6. mitmproxy intercepts `/aweme/v1/general/search/single/` responses
 7. Deduplicates, drops videos under 1k likes, batch-upserts to PostgreSQL
 
 `scrape_forever.py` reuses one mitmproxy + TikTok launch for the entire run — only the
@@ -345,8 +379,7 @@ causing constant spurious TikTok relaunches.
 
 **ADB port is always 5556:**
 Even when running ADB commands locally on the VM, use `127.0.0.1:5556` (the socat proxy),
-not 5555. Direct port 5555 is inside the container's network namespace and not reachable
-without nsenter. `.env` sets `ADB_DEVICE=127.0.0.1:5556`.
+not 5555. Direct port 5555 is inside the container's network namespace.
 
 **mitmproxy endpoint:**
 - Path: `/aweme/v1/general/search/single/`
@@ -359,8 +392,8 @@ the proxy isn't cleared, Android loses internet on next scrape.
 
 **mitmproxy cert — do not copy or regenerate on a clone:**
 The cert in Android's system CA store and the private key in `~/.mitmproxy/` are a matched
-pair from the source VM. If they're out of sync, TikTok shows "No internet connection"
-and mitmdump logs TLS handshake failures. Cloning keeps them in sync automatically.
+pair from the source VM. Cloning keeps them in sync. If they diverge, TikTok shows
+"No internet connection" and mitmdump logs TLS handshake failures.
 
 ---
 
@@ -408,13 +441,13 @@ PGPASSWORD=app1dev psql -U app1_user -h 150.136.40.239 -d tiktoks \
 |---|---|
 | VNC blank / black screen | `waydroid show-full-ui` (RC 0 = success) |
 | `Failed to get service waydroidplatform` | Android not fully booted — wait for `boot_completed=1`, retry show-full-ui |
-| `adb: device unauthorized` | Shouldn't happen on clones — ADB key is inherited. If it does: push ADB key via lxc-attach (see WAYDROID_GCP2_SETUP.md Step 7) |
+| `adb: device unauthorized` | Shouldn't happen on clones. If it does: push ADB key via lxc-attach (see WAYDROID_GCP2_SETUP.md Step 7) |
 | Container keeps stopping | Re-run `sudo bash /usr/local/bin/waydroid-start.sh` |
 | `socat: Address already in use` | `sudo pkill socat` then re-run startup script |
 | sway socket never appears | Check `/tmp/sway.log`; `pkill sway && pkill waydroid` and retry |
 | `adb connect` refused | socat proxy not running; re-run startup script |
 | Scraper captures 0 videos | `tail /tmp/mitmdump.log`; confirm cert mounted; confirm sort filter applied |
 | TikTok: No internet connection | Cert not mounted — re-run `waydroid-start.sh` |
-| TikTok asks to log in | Session expired — do a session transfer (see above) |
-| ADB input text truncated | This is handled in code (char-by-char); if it regresses check `mobile_scrape.py` |
+| TikTok asks to log in | Session expired — do Session Transfer above |
+| ADB input text truncated | Handled in code (char-by-char); if it regresses check `mobile_scrape.py` |
 | Scraper types into wrong app | `_foreground_app()` wrong — check `dumpsys window` output directly |
