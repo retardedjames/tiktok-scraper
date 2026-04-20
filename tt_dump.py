@@ -1,23 +1,15 @@
-
-import json, gzip
+import json
 from mitmproxy import http
+
 
 def response(flow: http.HTTPFlow):
     host = flow.request.host
     if not ("tiktok" in host or "tiktokv" in host):
         return
     path = flow.request.path
-    q = dict(flow.request.query)
-    kw = q.get("keyword", "")
-    sort_type = q.get("sort_type", "rel")
-    cursor = q.get("cursor", "0")
 
-    # Log every TikTok search path so we can find cursor=0
-    if "search" in path:
-        msg = f"[path] {path} kw={kw!r} sort={sort_type} cursor={cursor}\n"
-        print(msg, end="", flush=True)
-        with open("/tmp/tt_paths.log", "a") as _pf:
-            _pf.write(msg)
+    if "search" not in path:
+        return
 
     is_known = "search/item" in path or "search/stream" in path or "search/single" in path
     if not is_known:
@@ -28,27 +20,23 @@ def response(flow: http.HTTPFlow):
     sort_type = query.get("sort_type", "rel")
     cursor = query.get("cursor", "0")
 
-    body = flow.response.content
-    enc = flow.response.headers.get("content-encoding", "")
-
-    if "br" in enc:
-        try:
-            import brotli
-            body = brotli.decompress(body)
-        except Exception as e:
-            print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: brotli decompress failed: {e}", flush=True)
-            return
-    elif "gzip" in enc:
-        try:
-            body = gzip.decompress(body)
-        except Exception as e:
-            print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: gzip decompress failed: {e}", flush=True)
-            return
+    body = flow.response.content or b""
 
     try:
         data = json.loads(body)
     except Exception as e:
-        print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: JSON parse failed (enc={enc!r}): {e}", flush=True)
+        enc = flow.response.headers.get("content-encoding", "")
+        ctype = flow.response.headers.get("content-type", "")
+        head = bytes(body[:120])
+        raw_dump = f"/tmp/tt_raw_{keyword}_{sort_type}_cursor{cursor}.bin"
+        try:
+            with open(raw_dump, "wb") as rf:
+                rf.write(body)
+        except Exception:
+            pass
+        print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: JSON parse failed "
+              f"(enc={enc!r} ctype={ctype!r} len={len(body)} head={head!r}) saved={raw_dump}: {e}",
+              flush=True)
         return
 
     raw_list = data.get("aweme_list") or data.get("item_list") or data.get("video_list") or []
