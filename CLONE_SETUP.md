@@ -35,7 +35,6 @@ Multiple VMs pull from the same shared queue (`terms` table, `FOR UPDATE SKIP LO
 | Name | IP | Status |
 |---|---|---|
 | GCP2 | `34.153.25.251` | Active — reference/source image |
-| GCP4 | `35.184.191.10` | Active — scraping |
 
 SSH: `ssh -i ~/.ssh/jamescvermont jamescvermont@<VM_IP>`
 VNC: `<VM_IP>:5900` (no password) — for monitoring/login only
@@ -128,22 +127,45 @@ ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> \
 
 If `cert_ok` is not printed, the bind-mount failed. Re-run `waydroid-start.sh` and retry.
 
-### Step 7 — Verify TikTok session
+### Step 7 — Wipe inherited TikTok session and log in fresh
 
-Launch TikTok and take a screenshot to check whether it opens to the feed or the login screen:
+**Do not reuse the source VM's TikTok session.** Running two VMs with the same
+device fingerprint (`device_id` / `install_id` are baked into the app data and
+sign every API request via `X-Gorgon`/`X-Ladon`/`X-Argus`) trips TikTok's
+anti-abuse: sort=1 (most-liked) queries return a truncated body
+(`{result_status, status_code, status_msg, chunk_index}` — no `data`) and the
+scraper gets 0 captures indefinitely. The throttle is account+device-scoped and
+persists for a long time (hours+).
+
+Each new VM must run on **its own TikTok account** with its own freshly
+generated `device_id`. The wipe below clears the inherited app data so the
+next TikTok launch registers new IDs.
 
 ```bash
 ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
+  adb -s 127.0.0.1:5556 shell am force-stop com.tiktok.lite.go
+  adb -s 127.0.0.1:5556 shell pm clear com.tiktok.lite.go
   adb -s 127.0.0.1:5556 shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity
-  sleep 8
-  adb -s 127.0.0.1:5556 shell screencap -p /sdcard/screen.png
-  adb -s 127.0.0.1:5556 pull /sdcard/screen.png /tmp/screen_verify.png
 "
 ```
 
-View the screenshot (`/tmp/screen_verify.png`) to determine the result:
-- **Feed visible (videos, FYP)** → session is good, proceed to Step 8
-- **Login screen or empty / "Sign up" prompt** → session expired, do **Session Transfer** below before Step 8
+Then log in manually via VNC:
+1. Connect VNC to `<NEW_VM_IP>:5900` (no password)
+2. Log in to TikTok Lite with a **different account** than the one on GCP2
+3. Expect a slider captcha on first login — click and drag (sway supports the virtual pointer protocol)
+
+Verify the feed is reachable before proceeding:
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
+  adb -s 127.0.0.1:5556 shell screencap -p /sdcard/screen.png
+  adb -s 127.0.0.1:5556 pull /sdcard/screen.png /tmp/screen_verify.png
+"
+scp -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP>:/tmp/screen_verify.png /tmp/
+```
+
+Screenshot must show the For You feed. If it's still on a login screen, repeat
+the login flow.
 
 ### Step 8 — Reset stuck queue terms
 
@@ -180,35 +202,6 @@ Update the VM fleet table in this file (`CLONE_SETUP.md`) to add the new VM:
 
 ---
 
-## Session Transfer (if Step 7 shows login screen)
-
-```bash
-# Export from GCP2 (pipe to host /tmp — writing -czf /tmp/... inside lxc-attach
-# targets the container's /tmp, not the host's /tmp)
-ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251 \
-  "sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- \
-   tar -czf - -C /data/data com.tiktok.lite.go | sudo tee /tmp/tiktok_session.tar.gz > /dev/null"
-
-# Copy GCP2 → WSL2 → new VM
-scp -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251:/tmp/tiktok_session.tar.gz /tmp/
-scp -i ~/.ssh/jamescvermont /tmp/tiktok_session.tar.gz jamescvermont@<NEW_VM_IP>:/tmp/
-
-# Restore on new VM
-ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
-  sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c '
-    am force-stop com.tiktok.lite.go
-    rm -rf /data/data/com.tiktok.lite.go
-    tar -xzf /tmp/tiktok_session.tar.gz -C /data/data
-    chown -R 10145:10145 /data/data/com.tiktok.lite.go
-    chmod -R 771 /data/data/com.tiktok.lite.go
-  '
-"
-```
-
-Re-take the screenshot (Step 7) to confirm the feed is now visible before continuing.
-
----
-
 ## What the Clone Inherits (no action needed)
 
 | Item | Notes |
@@ -216,7 +209,7 @@ Re-take the screenshot (Step 7) to confirm the feed is now visible before contin
 | Waydroid + Android images | Inherited |
 | libhoudini (ARM translation) | Inherited |
 | TikTok Lite APK | Inherited |
-| TikTok session (logged in) | Inherited — verify in Step 7 |
+| TikTok session (logged in) | **Wiped in Step 7** — fresh login required on its own account |
 | mitmproxy cert + private key | **Do not regenerate** — matched pair from source |
 | ADB key (authorized in Android) | Inherited |
 | Screen dimensions (720×1612 @ 280dpi) | Inherited |
@@ -449,6 +442,6 @@ PGPASSWORD=app1dev psql -U app1_user -h 150.136.40.239 -d tiktoks \
 | `adb connect` refused | socat proxy not running; re-run startup script |
 | Scraper captures 0 videos | `tail /tmp/mitmdump.log`; confirm cert mounted; confirm sort filter applied |
 | TikTok: No internet connection | Cert not mounted — re-run `waydroid-start.sh` |
-| TikTok asks to log in | Session expired — do Session Transfer above |
+| TikTok asks to log in | Expected on a fresh clone — log in via VNC with a distinct account (see Step 7) |
 | ADB input text truncated | Handled in code (char-by-char); if it regresses check `mobile_scrape.py` |
 | Scraper types into wrong app | `_foreground_app()` wrong — check `dumpsys window` output directly |
