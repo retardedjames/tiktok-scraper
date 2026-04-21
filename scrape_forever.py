@@ -173,6 +173,8 @@ def main():
                     _notify(f"'{keyword}' — {saved} videos saved [{VM_NAME}]",
                             priority="low", tags="mag")
 
+                ms.browse_fyp()
+
                 if saved == 0:
                     consecutive_empty += 1
                     _log(

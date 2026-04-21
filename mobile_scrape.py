@@ -31,6 +31,8 @@ SEARCH_BTN       = (633, 91)    # pink "Search" button (top-right of search bar)
 FILTER_ICON      = (700, 173)   # slider/filter icon (right of tab bar)
 LIKE_COUNT_BTN   = (315, 1420)  # "Like count" sort button in filter popup
 APPLY_BTN        = (670, 778)   # "Apply" button in filter popup header
+HEART_BTN        = (668, 912)   # FYP heart/like button (right action rail)
+HOME_TAB         = (72, 1498)   # Home tab in bottom nav (returns to FYP)
 
 
 def safe_keyword(k: str) -> str:
@@ -165,6 +167,28 @@ def _ensure_tiktok_foreground():
         time.sleep(10.0)
         fg = _foreground_app()
         print(f"[*] Foreground after re-launch: {fg}")
+
+
+def browse_fyp(swipes: int = 2, likes: int = 1, dwell: float = 3.0):
+    """Between-term human-simulation: return to FYP, swipe through a few
+    videos, like one. Takes ~10-13s total with defaults. Never raises —
+    failures here shouldn't interrupt the scrape loop."""
+    try:
+        for _ in range(3):
+            adb("shell input keyevent KEYCODE_BACK")
+            time.sleep(0.4)
+        _ensure_tiktok_foreground()
+        adb_tap(*HOME_TAB)
+        time.sleep(1.5)
+        for i in range(swipes):
+            if i < likes:
+                adb_tap(*HEART_BTN)
+                time.sleep(1.0)
+            adb("shell input swipe 360 1200 360 400 350")
+            time.sleep(dwell)
+        print(f"[*] FYP browse done ({swipes} swipes, {likes} likes)")
+    except Exception as e:
+        print(f"[!] browse_fyp failed (ignored): {e}")
 
 
 def search_and_sort(keyword: str, first: bool = True):
