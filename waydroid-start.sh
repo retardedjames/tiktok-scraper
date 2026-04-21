@@ -85,8 +85,20 @@ chmod +x /usr/local/bin/adb-waydroid-proxy.sh
 socat TCP-LISTEN:5556,fork,bind=0.0.0.0 EXEC:/usr/local/bin/adb-waydroid-proxy.sh \
     > /tmp/socat_adb.log 2>&1 &
 
+echo "[*] Ensuring mitmproxy CA cert is on /sdcard..."
+HOST_CERT=/home/$WAYDROID_USER/.mitmproxy/mitmproxy-ca-cert.pem
+if [ ! -f "$HOST_CERT" ]; then
+    echo "[!] Host cert missing at $HOST_CERT — run 'mitmdump --listen-port 18888 &; sleep 4; kill %1' as $WAYDROID_USER to generate."
+    exit 1
+fi
+sudo -u $WAYDROID_USER adb connect 127.0.0.1:5556 >/dev/null 2>&1
+if ! sudo -u $WAYDROID_USER adb -s 127.0.0.1:5556 shell 'ls /sdcard/mitmproxy-ca.pem' 2>/dev/null | grep -q mitmproxy-ca; then
+    echo "[*] Pushing host cert to /sdcard/mitmproxy-ca.pem..."
+    sudo -u $WAYDROID_USER adb -s 127.0.0.1:5556 push "$HOST_CERT" /sdcard/mitmproxy-ca.pem
+fi
+
 echo "[*] Installing mitmproxy CA cert..."
-lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c 'mkdir -p /tmp/cacerts && cp /system/etc/security/cacerts/* /tmp/cacerts/ && cp /sdcard/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0 2>/dev/null && chmod 644 /tmp/cacerts/c8750f0d.0 && mount --bind /tmp/cacerts /system/etc/security/cacerts && echo cert_mounted'
+lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c 'mkdir -p /tmp/cacerts && cp /system/etc/security/cacerts/* /tmp/cacerts/ && cp /sdcard/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0 && chmod 644 /tmp/cacerts/c8750f0d.0 && mount --bind /tmp/cacerts /system/etc/security/cacerts && echo cert_mounted'
 
 # show-full-ui runs AFTER adbd is ready — Android userspace is booted by this point.
 # Running it earlier causes "Failed to get service waydroidplatform" because the
