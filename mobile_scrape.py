@@ -94,7 +94,8 @@ def start_mitmproxy():
     proc = subprocess.Popen(
         [sys.executable, os.path.expanduser("~/.local/bin/mitmdump"),
          "--listen-host", "127.0.0.1", "--listen-port", "8080",
-         "-s", DUMP_SCRIPT],
+         "-s", DUMP_SCRIPT,
+         "-w", "/tmp/flows.mitm"],
         stdout=open("/tmp/mitmdump.log", "w"), stderr=subprocess.STDOUT,
     )
     # Poll until port is open
