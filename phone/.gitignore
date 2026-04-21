@@ -1,0 +1,5 @@
+.env
+coords.json
+.usbipd_device.json
+SCRAPER_STATUS.txt
+__pycache__/
