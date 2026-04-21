@@ -22,8 +22,10 @@ if os.path.exists(_env):
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip())
 
-# Pull db/queue from the parent scraper directory — single source of truth.
-sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
+# phone/ dir first (so our mobile_scrape/preflight win over the parent's),
+# then parent for db/queue.
+sys.path.insert(0, SCRIPT_DIR)
+sys.path.insert(1, os.path.dirname(SCRIPT_DIR))
 
 import queue as qmod
 import mobile_scrape as ms
