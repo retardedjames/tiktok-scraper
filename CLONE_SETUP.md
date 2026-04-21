@@ -201,8 +201,26 @@ this bridge-IP setting is only needed for the manual login step.
 
 Then log in manually via VNC:
 1. Connect VNC to `<NEW_VM_IP>:5900` (no password)
-2. Log in to TikTok Lite with a **different account** than the one on GCP2
-3. Expect a slider captcha on first login — click and drag (sway supports the virtual pointer protocol)
+2. If you see a black screen, run `waydroid show-full-ui` on the VM to surface Android in sway
+3. If TikTok shows **"no internet connection"**: the system cert mount is wrong — the clone's Android store has the old cert. Fix:
+   ```bash
+   ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> '
+   sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c "
+     umount /system/etc/security/cacerts 2>/dev/null || true
+     mkdir -p /tmp/cacerts
+     cp /system/etc/security/cacerts/* /tmp/cacerts/
+     mount -t tmpfs tmpfs /system/etc/security/cacerts
+     cp /tmp/cacerts/* /system/etc/security/cacerts/
+     cp /sdcard/mitmproxy-ca.pem /system/etc/security/cacerts/c8750f0d.0
+     chmod 644 /system/etc/security/cacerts/c8750f0d.0
+   "
+   adb -s 192.168.240.112:5555 shell am force-stop com.tiktok.lite.go
+   adb -s 192.168.240.112:5555 shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity
+   '
+   ```
+   Verify with `tail /tmp/mitmdump.log` — you should see `+N videos` lines, not `ssl/tls alert certificate unknown`.
+4. Log in to TikTok Lite with a **different account** than the one on GCP2
+5. Expect a slider captcha on first login — click and drag (sway supports the virtual pointer protocol)
 
 Verify the feed is reachable before proceeding:
 
@@ -490,6 +508,7 @@ PGPASSWORD=app1dev psql -U app1_user -h 150.136.40.239 -d tiktoks \
 | Container keeps stopping | Re-run `sudo bash /usr/local/bin/waydroid-start.sh` |
 | `socat: Address already in use` | `sudo pkill socat` then re-run startup script |
 | sway socket never appears | Check `/tmp/sway.log`; `pkill sway && pkill waydroid` and retry |
+| `adb: device not found` / ADB commands hang after reboot | Container is FROZEN (Waydroid freezes it when session is idle). Check `waydroid status` — if `Container: FROZEN`, run `waydroid show-full-ui` to unfreeze. If `adb -s 127.0.0.1:5556` still hangs, connect via the direct Waydroid IP instead: `adb connect 192.168.240.112:5555` |
 | `adb connect` refused | socat proxy not running; re-run startup script |
 | Scraper captures 0 videos | `tail /tmp/mitmdump.log`; confirm cert mounted; confirm sort filter applied |
 | TikTok: No internet connection **during provisioning login** | Two causes: (1) mitmproxy not running — start it manually (see Step 7). (2) Android proxy still set to `127.0.0.1:8080` from clone — `adb reverse` isn't active yet, so that points at the Android loopback. Fix: set proxy to `192.168.240.1:8080` (bridge IP) — see Step 7. |
