@@ -170,25 +170,27 @@ def _ensure_tiktok_foreground():
 
 
 def browse_fyp(swipes: int = 2, likes: int = 1, dwell: float = 3.0):
-    """Between-term human-simulation: return to FYP, swipe through a few
-    videos, like one. Takes ~10-13s total with defaults. Never raises —
-    failures here shouldn't interrupt the scrape loop."""
-    try:
-        for _ in range(3):
-            adb("shell input keyevent KEYCODE_BACK")
-            time.sleep(0.4)
-        _ensure_tiktok_foreground()
-        adb_tap(*HOME_TAB)
-        time.sleep(1.5)
-        for i in range(swipes):
-            if i < likes:
-                adb_tap(*HEART_BTN)
-                time.sleep(1.0)
-            adb("shell input swipe 360 1200 360 400 350")
-            time.sleep(dwell)
-        print(f"[*] FYP browse done ({swipes} swipes, {likes} likes)")
-    except Exception as e:
-        print(f"[!] browse_fyp failed (ignored): {e}")
+    """Between-term pause. Active FYP browsing (back-to-home, swipe, heart)
+    was tapping unpredictable places when the pre-search screen state
+    varied — disabled for now, restore by uncommenting. For the moment
+    this is just a fixed idle delay."""
+    time.sleep(10)
+    # try:
+    #     for _ in range(3):
+    #         adb("shell input keyevent KEYCODE_BACK")
+    #         time.sleep(0.4)
+    #     _ensure_tiktok_foreground()
+    #     adb_tap(*HOME_TAB)
+    #     time.sleep(1.5)
+    #     for i in range(swipes):
+    #         if i < likes:
+    #             adb_tap(*HEART_BTN)
+    #             time.sleep(1.0)
+    #         adb("shell input swipe 360 1200 360 400 350")
+    #         time.sleep(dwell)
+    #     print(f"[*] FYP browse done ({swipes} swipes, {likes} likes)")
+    # except Exception as e:
+    #     print(f"[!] browse_fyp failed (ignored): {e}")
 
 
 def search_and_sort(keyword: str, first: bool = True):
