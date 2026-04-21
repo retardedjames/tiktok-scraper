@@ -31,6 +31,24 @@ import queue as qmod
 import mobile_scrape as ms
 import preflight
 
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "retardedjames-tiktok")
+VM_NAME = os.environ.get("VM_NAME", "phone")
+
+
+def _notify(msg: str, tags: str = "") -> None:
+    """Best-effort ntfy push; never raises."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"https://ntfy.sh/{NTFY_TOPIC}",
+            data=msg.encode(),
+            headers={"Title": f"TikTok Scraper [{VM_NAME}]", "Tags": tags},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        print(f"[!] ntfy failed: {e}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Batch TikTok phone scraper")
@@ -96,12 +114,15 @@ def main():
                 if saved == 0:
                     qmod.mark_retry(term_id)
                     print(f"[*] 0 saved \u2192 term returned to pending for retry.")
+                    _notify(f"'{keyword}': 0 saved (retry)", tags="warning")
                 else:
                     qmod.mark_done(term_id, videos_saved=saved)
+                    _notify(f"'{keyword}': {saved} videos saved", tags="floppy_disk")
 
             except Exception as e:
                 print(f"[!] Failed on '{keyword}': {e}")
                 qmod.mark_failed(term_id)
+                _notify(f"'{keyword}': failed ({e})", tags="x")
             finally:
                 # Close TikTok between terms so the next opens fresh
                 print("[*] Closing TikTok...")
