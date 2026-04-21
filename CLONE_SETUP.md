@@ -159,11 +159,17 @@ scraper gets 0 captures indefinitely. The throttle is account+device-scoped and
 persists for a long time (hours+).
 
 Each new VM must run on **its own TikTok account** with its own freshly
-generated `device_id`. The wipe below clears the inherited app data so the
-next TikTok launch registers new IDs.
+generated `device_id`. The wipe below:
+1. Randomizes `android_id` (OS-level identifier — **not** cleared by `pm clear`, sent in every API request)
+2. Clears TikTok's app data so the next launch registers new `device_id`/`iid`/`openudid`
 
 ```bash
 ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
+  # Randomize the OS-level android_id (shared across clones, must be unique per VM)
+  adb -s 127.0.0.1:5556 shell settings put secure android_id \$(cat /dev/urandom | tr -dc 'a-f0-9' | head -c 16)
+  adb -s 127.0.0.1:5556 shell settings get secure android_id
+
+  # Wipe TikTok app data (regenerates device_id, iid, openudid on next launch)
   adb -s 127.0.0.1:5556 shell am force-stop com.tiktok.lite.go
   adb -s 127.0.0.1:5556 shell pm clear com.tiktok.lite.go
   adb -s 127.0.0.1:5556 shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity
@@ -253,7 +259,8 @@ Update the VM fleet table in this file (`CLONE_SETUP.md`) to add the new VM:
 | Waydroid + Android images | Inherited |
 | libhoudini (ARM translation) | Inherited |
 | TikTok Lite APK | Inherited |
-| TikTok session (logged in) | **Wiped in Step 7** — fresh login required on its own account |
+| `android_id` (OS-level device ID) | **Randomized in Step 7** — sent in every TikTok API request; clones share it unless randomized |
+| TikTok session + device_id/iid/openudid | **Wiped in Step 7** — fresh login required on its own account |
 | mitmproxy cert + private key | **Do not regenerate** — matched pair from source |
 | ADB key (authorized in Android) | Inherited |
 | Screen dimensions (720×1612 @ 280dpi) | Inherited |
