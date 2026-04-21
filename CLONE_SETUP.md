@@ -117,15 +117,35 @@ ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> \
 
 Timeout: 3 minutes. If it never boots, check `journalctl -u waydroid-container` on the VM.
 
-### Step 6 — Verify cert is mounted
+### Step 6 — Verify cert is mounted and correct
+
+Check that the cert in the Android CA store matches the host's mitmproxy key:
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
+  HOST_MD5=\$(md5sum ~/.mitmproxy/mitmproxy-ca-cert.pem | awk '{print \$1}')
+  ANDROID_MD5=\$(sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- md5sum /system/etc/security/cacerts/c8750f0d.0 2>/dev/null | awk '{print \$1}')
+  echo host=\$HOST_MD5 android=\$ANDROID_MD5
+  [ \"\$HOST_MD5\" = \"\$ANDROID_MD5\" ] && echo cert_ok || echo MISMATCH
+"
+```
+
+If `MISMATCH` or `cert_ok` is not printed, force-remount:
 
 ```bash
 ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> \
-  "sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- \
-   ls /system/etc/security/cacerts/c8750f0d.0 && echo cert_ok"
+  "sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c '
+    umount /system/etc/security/cacerts 2>/dev/null || true
+    mkdir -p /tmp/cacerts
+    cp /system/etc/security/cacerts/* /tmp/cacerts/
+    cp /sdcard/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0
+    chmod 644 /tmp/cacerts/c8750f0d.0
+    mount --bind /tmp/cacerts /system/etc/security/cacerts
+    echo cert_mounted
+  '"
 ```
 
-If `cert_ok` is not printed, the bind-mount failed. Re-run `waydroid-start.sh` and retry.
+Then re-verify the MD5s match before continuing.
 
 ### Step 7 — Wipe inherited TikTok session and log in fresh
 
@@ -148,6 +168,29 @@ ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
   adb -s 127.0.0.1:5556 shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity
 "
 ```
+
+Before logging in via VNC, start mitmproxy and fix the Android proxy. During
+provisioning `adb reverse` is not set up (only the scraper sets it), so the cloned
+proxy setting `127.0.0.1:8080` points at the Android loopback — not the host. Use
+the Waydroid bridge IP instead:
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> "
+  # Start mitmproxy in background (TikTok won't connect without it)
+  nohup ~/.local/bin/mitmdump --listen-port 8080 --ssl-insecure \
+      -s ~/tiktok-scraper/tt_dump.py > /tmp/mitmdump.log 2>&1 &
+  sleep 3
+  ss -tlnp | grep 8080 | grep -q mitmdump && echo mitmproxy_ok || echo mitmproxy_FAILED
+
+  # Point Android at the bridge IP (192.168.240.1 = host side of waydroid0)
+  adb -s 127.0.0.1:5556 shell settings put global http_proxy 192.168.240.1:8080
+  adb -s 127.0.0.1:5556 shell settings put global global_http_proxy_host 192.168.240.1
+  adb -s 127.0.0.1:5556 shell settings put global global_http_proxy_port 8080
+"
+```
+
+The scraper will reset the proxy to `127.0.0.1:8080` (+ `adb reverse`) when it starts —
+this bridge-IP setting is only needed for the manual login step.
 
 Then log in manually via VNC:
 1. Connect VNC to `<NEW_VM_IP>:5900` (no password)
@@ -441,7 +484,8 @@ PGPASSWORD=app1dev psql -U app1_user -h 150.136.40.239 -d tiktoks \
 | sway socket never appears | Check `/tmp/sway.log`; `pkill sway && pkill waydroid` and retry |
 | `adb connect` refused | socat proxy not running; re-run startup script |
 | Scraper captures 0 videos | `tail /tmp/mitmdump.log`; confirm cert mounted; confirm sort filter applied |
-| TikTok: No internet connection | Cert not mounted — re-run `waydroid-start.sh` |
+| TikTok: No internet connection **during provisioning login** | Two causes: (1) mitmproxy not running — start it manually (see Step 7). (2) Android proxy still set to `127.0.0.1:8080` from clone — `adb reverse` isn't active yet, so that points at the Android loopback. Fix: set proxy to `192.168.240.1:8080` (bridge IP) — see Step 7. |
+| TikTok: No internet connection **during scraping** | Cert mismatch — mitmdump logs `Client TLS handshake failed / ssl alert certificate unknown`. Verify MD5s match (Step 6). Re-run the force-remount block in Step 6, then restart TikTok. |
 | TikTok asks to log in | Expected on a fresh clone — log in via VNC with a distinct account (see Step 7) |
 | ADB input text truncated | Handled in code (char-by-char); if it regresses check `mobile_scrape.py` |
 | Scraper types into wrong app | `_foreground_app()` wrong — check `dumpsys window` output directly |

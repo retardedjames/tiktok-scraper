@@ -98,7 +98,18 @@ if ! sudo -u $WAYDROID_USER adb -s 127.0.0.1:5556 shell 'ls /sdcard/mitmproxy-ca
 fi
 
 echo "[*] Installing mitmproxy CA cert..."
-lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c 'mkdir -p /tmp/cacerts && cp /system/etc/security/cacerts/* /tmp/cacerts/ && cp /sdcard/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0 && chmod 644 /tmp/cacerts/c8750f0d.0 && mount --bind /tmp/cacerts /system/etc/security/cacerts && echo cert_mounted'
+# umount first so a re-run of this script always gets a fresh bind-mount with the
+# correct cert — without this, a second run copies stale files from the already-mounted
+# tmpfs back into itself and the old cert stays in place.
+lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c '
+  umount /system/etc/security/cacerts 2>/dev/null || true
+  mkdir -p /tmp/cacerts
+  cp /system/etc/security/cacerts/* /tmp/cacerts/
+  cp /sdcard/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0
+  chmod 644 /tmp/cacerts/c8750f0d.0
+  mount --bind /tmp/cacerts /system/etc/security/cacerts
+  echo cert_mounted
+'
 
 # show-full-ui runs AFTER adbd is ready — Android userspace is booted by this point.
 # Running it earlier causes "Failed to get service waydroidplatform" because the
