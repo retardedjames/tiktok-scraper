@@ -98,6 +98,31 @@ def _foreground_activity() -> str:
     return ""
 
 
+def _screen_is_mostly_white(threshold: float = 0.50) -> bool:
+    """Return True if >threshold of sampled screen pixels are near-white (search page heuristic)."""
+    try:
+        import io
+        raw = subprocess.run(
+            _adb_base() + ["exec-out", "screencap", "-p"],
+            capture_output=True, timeout=15,
+        ).stdout
+        if len(raw) < 1000:
+            return False
+        from PIL import Image
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        w, h = img.size
+        pts = [(x, y) for x in range(40, w, 60) for y in range(120, h - 120, 60)]
+        white = sum(1 for x, y in pts if all(c > 210 for c in img.getpixel((x, y))))
+        ratio = white / max(len(pts), 1)
+        print(f"[dbg] white-pixel ratio: {ratio:.2f} ({white}/{len(pts)})")
+        return ratio >= threshold
+    except ImportError:
+        return False
+    except Exception as e:
+        print(f"[dbg] white check error: {e}")
+        return False
+
+
 def ensure_coords():
     global _COORDS
     if _COORDS is None:
@@ -180,7 +205,7 @@ def browse_fyp():
     time.sleep(8)
 
 
-def search_and_sort(keyword: str, first: bool = True):
+def search_and_sort(keyword: str):
     c = ensure_coords()
     tag = safe_keyword(keyword).replace(" ", "_")[:20]
 
@@ -191,14 +216,28 @@ def search_and_sort(keyword: str, first: bool = True):
 
     screenshot(f"{tag}_A_before_search_tap")
 
-    print("[*] Tapping search icon...")
-    adb_tap(*c.SEARCH_ICON)
-    time.sleep(1.8)
-    screenshot(f"{tag}_B_after_search_tap")
-
-    fg = _foreground_app()
-    if "tiktok" not in fg:
-        raise RuntimeError(f"TikTok lost foreground after search tap: {fg}")
+    for attempt in range(3):
+        print(f"[*] Tapping search icon (attempt {attempt + 1})...")
+        adb_tap(*c.SEARCH_ICON)
+        time.sleep(2.0)
+        screenshot(f"{tag}_B_after_search_tap")
+        fg_act = _foreground_activity()
+        on_search = "FeedSearch" in fg_act or "Search" in fg_act
+        if not on_search:
+            on_search = _screen_is_mostly_white()
+            if on_search:
+                print(f"[*] Search page confirmed via screenshot (activity={fg_act!r})")
+        if on_search:
+            break
+        print(f"[!] Not on search page (activity={fg_act!r}) — force-stopping TikTok and retrying")
+        adb("shell am force-stop com.tiktok.lite.go")
+        time.sleep(1.5)
+        adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
+        time.sleep(7.0)
+        fg_act = _foreground_activity()
+        print(f"[*] Foreground after relaunch: {fg_act!r}")
+    else:
+        raise RuntimeError(f"Search page not reached after 3 attempts — last activity: {fg_act!r}")
 
     # Clear field and focus
     adb_tap(*c.SEARCH_FIELD)
@@ -352,7 +391,7 @@ def main():
     try:
         print("[*] Launching TikTok Lite...")
         launch_tiktok()
-        search_and_sort(keyword, first=True)
+        search_and_sort(keyword)
         if args.scrolls is not None:
             scroll_results(args.scrolls)
         else:

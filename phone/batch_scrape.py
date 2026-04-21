@@ -60,8 +60,6 @@ def main():
     ms.set_proxy()
 
     try:
-        ms.launch_tiktok()
-
         for i, (term_id, keyword) in enumerate(terms):
             print(f"\n{'=' * 50}")
             print(f"[*] Term {i + 1}/{len(terms)}: '{keyword}'")
@@ -72,7 +70,8 @@ def main():
                     os.remove(fname)
 
             try:
-                ms.search_and_sort(keyword, first=(i == 0))
+                ms.launch_tiktok()
+                ms.search_and_sort(keyword)
 
                 if args.scrolls is not None:
                     ms.scroll_results(args.scrolls)
@@ -101,6 +100,11 @@ def main():
             except Exception as e:
                 print(f"[!] Failed on '{keyword}': {e}")
                 qmod.mark_failed(term_id)
+            finally:
+                # Close TikTok between terms so the next opens fresh
+                print("[*] Closing TikTok...")
+                ms.adb("shell am force-stop com.tiktok.lite.go")
+                time.sleep(1.5)
 
     finally:
         ms.clear_proxy()
