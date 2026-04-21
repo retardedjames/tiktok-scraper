@@ -15,7 +15,7 @@ Incorporates from the GCP scraper:
   - safe_keyword for filesystem paths
   - am start -n <activity> launch (more reliable than monkey)
   - character-by-character typing with KEYCODE_SPACE
-  - scroll_smart with max_scrolls cap (no like-count threshold)
+  - scroll_smart with max_scrolls cap + per-batch like-count threshold
   - foreground-app verification between steps
 """
 
@@ -298,10 +298,11 @@ def _jsonl_line_count(fname: str) -> int:
         return sum(1 for _ in f)
 
 
-def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 10,
-                 max_scrolls: int = 33) -> int:
+def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 5,
+                 max_scrolls: int = 33, min_likes: int = 1000) -> int:
     """
-    Scroll up to `max_scrolls`, stopping early only if TikTok stops loading.
+    Scroll up to `max_scrolls`, stopping early if TikTok stops loading or if
+    a whole batch produces no videos with digg_count > min_likes.
     """
     fname = f"/tmp/tt_{safe_keyword(keyword)}_{sort_type}.jsonl"
     total = 0
@@ -327,7 +328,26 @@ def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 10,
                 print(f"       (could not read: {_e})")
             break
 
-        print(f"[*] {total} scrolls — {new_count} lines captured")
+        batch_max_likes = 0
+        with open(fname) as _f:
+            for i, line in enumerate(_f):
+                if i < prev_count:
+                    continue
+                try:
+                    v = json.loads(line)
+                    likes = (v.get("statistics") or {}).get("digg_count", 0) or 0
+                    if likes > batch_max_likes:
+                        batch_max_likes = likes
+                except Exception:
+                    pass
+
+        print(f"[*] {total} scrolls — {new_count} lines captured "
+              f"(batch max likes: {batch_max_likes})")
+
+        if batch_max_likes <= min_likes:
+            print(f"[*] No videos with >{min_likes} likes in latest batch — stopping.")
+            break
+
         if total >= max_scrolls:
             print(f"[*] Reached max {max_scrolls} scrolls.")
             break
@@ -362,7 +382,7 @@ def main():
                         help="Max videos to show in terminal output")
     parser.add_argument("--scrolls", type=int, default=None,
                         help="Fixed scroll count (default: auto-scroll to max_scrolls)")
-    parser.add_argument("--batch", type=int, default=10,
+    parser.add_argument("--batch", type=int, default=5,
                         help="Scrolls per batch when auto-scrolling")
     parser.add_argument("--out", default=None)
     parser.add_argument("--no-db", action="store_true", help="Skip saving to database")
