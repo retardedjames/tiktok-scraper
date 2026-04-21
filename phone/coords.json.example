@@ -3,6 +3,7 @@
   "SEARCH_FIELD":     [336, 116],
   "SEARCH_CLEAR_BTN": [571, 116],
   "SEARCH_BTN":       [638, 113],
+  "VIDEOS_TAB":       [333, 135],
   "FILTER_ICON":      [700, 173],
   "LIKE_COUNT_BTN":   [260, 1480],
   "APPLY_BTN":        [670, 975],

@@ -108,6 +108,10 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", help="Save screenshots at each UI step")
+    parser.add_argument("--no-videos-tab-first", dest="videos_tab_first",
+                        action="store_false",
+                        help="Skip the Videos-tab tap; use the old Top-tab filter flow")
+    parser.set_defaults(videos_tab_first=True)
     args = parser.parse_args()
 
     import queue as qmod
@@ -150,7 +154,7 @@ def main():
 
             try:
                 ms.launch_tiktok()
-                ms.search_and_sort(keyword)
+                ms.search_and_sort(keyword, videos_tab_first=args.videos_tab_first)
                 ms.scroll_smart(keyword)
 
                 raw_videos = ms.load_results(keyword)

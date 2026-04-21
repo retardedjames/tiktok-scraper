@@ -58,6 +58,10 @@ def main():
     parser.add_argument("--batch", type=int, default=10,
                         help="Scrolls per batch in auto mode")
     parser.add_argument("--no-db", action="store_true")
+    parser.add_argument("--no-videos-tab-first", dest="videos_tab_first",
+                        action="store_false",
+                        help="Skip the Videos-tab tap; use the old Top-tab filter flow")
+    parser.set_defaults(videos_tab_first=True)
     parser.add_argument("--debug", action="store_true",
                         help="Save screenshots at each UI step")
     args = parser.parse_args()
@@ -91,7 +95,7 @@ def main():
 
             try:
                 ms.launch_tiktok()
-                ms.search_and_sort(keyword)
+                ms.search_and_sort(keyword, videos_tab_first=args.videos_tab_first)
 
                 if args.scrolls is not None:
                     ms.scroll_results(args.scrolls)

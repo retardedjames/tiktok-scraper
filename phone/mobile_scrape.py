@@ -205,7 +205,7 @@ def browse_fyp():
     time.sleep(8)
 
 
-def search_and_sort(keyword: str):
+def search_and_sort(keyword: str, videos_tab_first: bool = True):
     c = ensure_coords()
     tag = safe_keyword(keyword).replace(" ", "_")[:20]
 
@@ -260,6 +260,12 @@ def search_and_sort(keyword: str):
     adb_tap(*c.SEARCH_BTN)
     time.sleep(4.0)
     screenshot(f"{tag}_D_after_search_btn")
+
+    if videos_tab_first:
+        print("[*] Tapping 'Videos' tab before applying filter...")
+        adb_tap(*c.VIDEOS_TAB)
+        time.sleep(2.5)
+        screenshot(f"{tag}_D2_after_videos_tab")
 
     print("[*] Opening filter popup...")
     adb_tap(*c.FILTER_ICON)
@@ -386,6 +392,10 @@ def main():
                         help="Scrolls per batch when auto-scrolling")
     parser.add_argument("--out", default=None)
     parser.add_argument("--no-db", action="store_true", help="Skip saving to database")
+    parser.add_argument("--no-videos-tab-first", dest="videos_tab_first",
+                        action="store_false",
+                        help="Skip the Videos-tab tap; use the old Top-tab filter flow")
+    parser.set_defaults(videos_tab_first=True)
     parser.add_argument("--debug", action="store_true", help="Save screenshots at each UI step")
     args = parser.parse_args()
 
@@ -411,7 +421,7 @@ def main():
     try:
         print("[*] Launching TikTok Lite...")
         launch_tiktok()
-        search_and_sort(keyword)
+        search_and_sort(keyword, videos_tab_first=args.videos_tab_first)
         if args.scrolls is not None:
             scroll_results(args.scrolls)
         else:

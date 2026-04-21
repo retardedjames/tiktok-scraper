@@ -18,6 +18,7 @@ UI elements tracked:
   SEARCH_FIELD     search text input
   SEARCH_CLEAR_BTN X to clear the search field
   SEARCH_BTN       pink "Search" button top-right
+  VIDEOS_TAB       "Videos" tab on search-results page
   FILTER_ICON      filter/slider icon on results page
   LIKE_COUNT_BTN   "Like count" sort option in filter popup
   APPLY_BTN        Apply button in filter popup
@@ -41,6 +42,7 @@ REFERENCE_COORDS = {
     "SEARCH_FIELD":     (336, 116),
     "SEARCH_CLEAR_BTN": (571, 116),
     "SEARCH_BTN":       (638, 113),
+    "VIDEOS_TAB":       (333, 135),
     "FILTER_ICON":      (700, 173),
     "LIKE_COUNT_BTN":   (260, 1480),
     "APPLY_BTN":        (670, 975),
@@ -55,6 +57,7 @@ class Coords:
     SEARCH_FIELD: tuple
     SEARCH_CLEAR_BTN: tuple
     SEARCH_BTN: tuple
+    VIDEOS_TAB: tuple
     FILTER_ICON: tuple
     LIKE_COUNT_BTN: tuple
     APPLY_BTN: tuple
@@ -92,19 +95,27 @@ def load(adb_base: list = None) -> Coords:
     if os.path.exists(COORDS_FILE):
         with open(COORDS_FILE) as f:
             data = json.load(f)
+        w = data.get("width", REFERENCE_WIDTH)
+        h = data.get("height", REFERENCE_HEIGHT)
+        if "VIDEOS_TAB" in data:
+            videos_tab = tuple(data["VIDEOS_TAB"])
+        else:
+            sx, sy = w / REFERENCE_WIDTH, h / REFERENCE_HEIGHT
+            videos_tab = _scale(REFERENCE_COORDS["VIDEOS_TAB"], sx, sy)
         return Coords(
             SEARCH_ICON      = tuple(data["SEARCH_ICON"]),
             SEARCH_FIELD     = tuple(data["SEARCH_FIELD"]),
             SEARCH_CLEAR_BTN = tuple(data["SEARCH_CLEAR_BTN"]),
             SEARCH_BTN       = tuple(data["SEARCH_BTN"]),
+            VIDEOS_TAB       = videos_tab,
             FILTER_ICON      = tuple(data["FILTER_ICON"]),
             LIKE_COUNT_BTN   = tuple(data["LIKE_COUNT_BTN"]),
             APPLY_BTN        = tuple(data["APPLY_BTN"]),
             SWIPE_START_Y    = tuple(data["SWIPE_START_Y"]),
             SWIPE_END_Y      = tuple(data["SWIPE_END_Y"]),
-            width            = data.get("width", REFERENCE_WIDTH),
-            height           = data.get("height", REFERENCE_HEIGHT),
-            source           = f"coords.json ({data.get('width', '?')}x{data.get('height', '?')})",
+            width            = w,
+            height           = h,
+            source           = f"coords.json ({w}x{h})",
         )
 
     # 2. Auto-scale from reference
@@ -115,6 +126,7 @@ def load(adb_base: list = None) -> Coords:
         SEARCH_FIELD     = _scale(REFERENCE_COORDS["SEARCH_FIELD"], sx, sy),
         SEARCH_CLEAR_BTN = _scale(REFERENCE_COORDS["SEARCH_CLEAR_BTN"], sx, sy),
         SEARCH_BTN       = _scale(REFERENCE_COORDS["SEARCH_BTN"], sx, sy),
+        VIDEOS_TAB       = _scale(REFERENCE_COORDS["VIDEOS_TAB"], sx, sy),
         FILTER_ICON      = _scale(REFERENCE_COORDS["FILTER_ICON"], sx, sy),
         LIKE_COUNT_BTN   = _scale(REFERENCE_COORDS["LIKE_COUNT_BTN"], sx, sy),
         APPLY_BTN        = _scale(REFERENCE_COORDS["APPLY_BTN"], sx, sy),
