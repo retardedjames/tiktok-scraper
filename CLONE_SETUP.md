@@ -148,6 +148,36 @@ ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> \
 
 Then re-verify the MD5s match before continuing.
 
+### Step 6.5 — Masquerade build.prop as a Google Pixel 6
+
+Without this, every TikTok API request broadcasts `device_brand=waydroid` and
+`device_type=WayDroid x86_64 Device` — a trivial bot tell. Rewrite the rootfs
+build.props (across all partition namespaces: system, system_ext, vendor,
+product, odm, odm_dlkm, vendor_dlkm, system_dlkm) to identify as a Pixel 6:
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP> '
+  cd ~/tiktok-scraper && git pull
+  sudo waydroid session stop
+  sudo python3 emulator/masquerade_buildprop.py
+  sudo bash /usr/local/bin/waydroid-start.sh > /tmp/waydroid_session.log 2>&1 &
+  sleep 25
+  sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- getprop ro.product.brand
+  sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- getprop ro.product.model
+  sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- getprop ro.build.fingerprint
+'
+```
+
+Expected output:
+```
+google
+Pixel 6
+google/oriole/oriole:13/TQ3A.230901.001/10750268:user/release-keys
+```
+
+The session restart here re-mounts the overlay fresh, but that means Step 6's
+cert mount is gone — re-run the cert bind mount from Step 6 after this.
+
 ### Step 7 — Wipe inherited TikTok session and log in fresh
 
 **Do not reuse the source VM's TikTok session.** Running two VMs with the same
