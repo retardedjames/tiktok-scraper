@@ -7,6 +7,9 @@ set -e
 WAYDROID_USER=jamescvermont
 XDG=/run/user/1001
 
+echo "[*] Ensuring binder_linux module is loaded..."
+modprobe binder_linux 2>/dev/null || true
+
 echo "[*] Ensuring binderfs is mounted..."
 if ! mountpoint -q /dev/binderfs 2>/dev/null; then
     mkdir -p /dev/binderfs
@@ -81,6 +84,9 @@ printf '#!/bin/bash\nexec nsenter -t %s -n socat STDIO TCP4:127.0.0.1:5555\n' "$
 chmod +x /usr/local/bin/adb-waydroid-proxy.sh
 socat TCP-LISTEN:5556,fork,bind=0.0.0.0 EXEC:/usr/local/bin/adb-waydroid-proxy.sh \
     > /tmp/socat_adb.log 2>&1 &
+
+echo "[*] Installing mitmproxy CA cert..."
+lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c 'mkdir -p /tmp/cacerts && cp /system/etc/security/cacerts/* /tmp/cacerts/ && cp /sdcard/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0 2>/dev/null && chmod 644 /tmp/cacerts/c8750f0d.0 && mount --bind /tmp/cacerts /system/etc/security/cacerts && echo cert_mounted'
 
 # show-full-ui runs AFTER adbd is ready — Android userspace is booted by this point.
 # Running it earlier causes "Failed to get service waydroidplatform" because the

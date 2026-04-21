@@ -3,8 +3,8 @@
 Continuous TikTok scraper — runs forever, pulling one term at a time.
 
 Stops and appends to SCRAPER_STATUS.txt if:
-  - 2 consecutive terms return 0 videos saved, OR
-  - 2 consecutive terms raise an exception
+  - 3 consecutive terms return 0 videos saved, OR
+  - 3 consecutive terms raise an exception
 
 Usage:
   python3 scrape_forever.py [--min-likes 5000] [--debug]
@@ -37,7 +37,7 @@ VM_NAME           = os.environ.get("VM_NAME", "unknown-vm")  # e.g. GCP2, GCP3
 # Set NTFY_PER_TERM=1 in .env to get a notification after every scraped term.
 NTFY_PER_TERM     = os.environ.get("NTFY_PER_TERM", "0") == "1"
 
-MAX_CONSECUTIVE_EMPTY = 2
+MAX_CONSECUTIVE_EMPTY = 3
 IDLE_SLEEP = 30  # seconds to wait when queue is empty before retrying
 HEARTBEAT_EVERY = 50  # notify every N terms so you know it's alive
 
@@ -181,7 +181,7 @@ def main():
                     )
                     if consecutive_empty >= MAX_CONSECUTIVE_EMPTY:
                         _log(
-                            "STOPPING: 2 consecutive terms returned 0 results — needs investigation.",
+                            f"STOPPING: {MAX_CONSECUTIVE_EMPTY} consecutive terms returned 0 results — needs investigation.",
                             also_status=True, notify=True, priority="high", tags="x,rotating_light"
                         )
                         break
@@ -203,7 +203,7 @@ def main():
                 tiktok_launched = False  # force re-launch next iteration
                 if consecutive_empty >= MAX_CONSECUTIVE_EMPTY:
                     _log(
-                        "STOPPING: 2 consecutive failures — needs investigation.",
+                        f"STOPPING: {MAX_CONSECUTIVE_EMPTY} consecutive failures — needs investigation.",
                         also_status=True, notify=True, priority="high", tags="x,rotating_light"
                     )
                     break
