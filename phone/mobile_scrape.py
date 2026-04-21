@@ -85,6 +85,19 @@ def _foreground_app() -> str:
     return ""
 
 
+def _foreground_activity() -> str:
+    """Return the activity class of the currently focused window."""
+    r = subprocess.run(_adb_base() + ["shell", "dumpsys", "window"], capture_output=True)
+    out = r.stdout.decode() if r.stdout else ""
+    for line in out.splitlines():
+        if "mCurrentFocus" in line and "/" in line:
+            try:
+                return line.split("/", 1)[1].rstrip("} \n")
+            except Exception:
+                pass
+    return ""
+
+
 def ensure_coords():
     global _COORDS
     if _COORDS is None:
@@ -171,12 +184,11 @@ def search_and_sort(keyword: str, first: bool = True):
     c = ensure_coords()
     tag = safe_keyword(keyword).replace(" ", "_")[:20]
 
-    print("[*] Pressing Back to clear any overlays...")
-    for _ in range(3):
-        adb("shell input keyevent KEYCODE_BACK")
-        time.sleep(0.4)
+    fg_act = _foreground_activity()
+    if "MainActivity" not in fg_act:
+        print(f"[!] Not on FYP (foreground={fg_act!r}) — relaunching")
+        launch_tiktok()
 
-    _ensure_tiktok_foreground()
     screenshot(f"{tag}_A_before_search_tap")
 
     print("[*] Tapping search icon...")

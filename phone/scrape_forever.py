@@ -127,7 +127,6 @@ def main():
     terms_done = 0
     mp = ms.start_mitmproxy()
     ms.set_proxy()
-    tiktok_launched = False
 
     try:
         while True:
@@ -148,10 +147,7 @@ def main():
                     os.remove(fname)
 
             try:
-                if not tiktok_launched:
-                    ms.launch_tiktok()
-                    tiktok_launched = True
-
+                ms.launch_tiktok()
                 ms.search_and_sort(keyword)
                 ms.scroll_smart(keyword)
 
@@ -204,7 +200,6 @@ def main():
                 print(traceback.format_exc(), flush=True)
                 qmod.mark_failed(term_id)
                 consecutive_empty += 1
-                tiktok_launched = False
                 if consecutive_empty >= MAX_CONSECUTIVE_EMPTY:
                     _log(
                         f"STOPPING: {MAX_CONSECUTIVE_EMPTY} consecutive failures \u2014 needs investigation.",
