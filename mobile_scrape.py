@@ -71,21 +71,28 @@ def screenshot(tag: str):
 
 
 def _foreground_app() -> str:
-    """Return the package name of the current focused window."""
+    """Return the package of the current focused window. Waydroid emits
+    multiple mCurrentFocus lines (one per display/namespace) — e.g. the
+    launcher3 window stays focused on the built-in display while TikTok
+    is focused on the Waydroid display. If any focused window is TikTok,
+    report TikTok; otherwise return the first focus."""
     r = subprocess.run(_adb_base() + ["shell", "dumpsys", "window"],
                        capture_output=True)
     out = r.stdout.decode() if r.stdout else ""
+    focused = []
     for line in out.splitlines():
         if "mCurrentFocus" in line and "/" in line:
-            # e.g. mCurrentFocus=Window{abc com.tiktok.lite.go/...}
             try:
                 pkg = line.split("/")[0].split()[-1]
                 if "{" in pkg:
                     pkg = pkg.split("{")[-1]
-                return pkg
+                focused.append(pkg)
             except Exception:
                 pass
-    return ""
+    for p in focused:
+        if "tiktok" in p:
+            return p
+    return focused[0] if focused else ""
 
 
 def start_mitmproxy():
@@ -138,14 +145,6 @@ def launch_tiktok():
     print(f"[*] TikTok launch: exit={r.returncode} {out[:80]}")
     time.sleep(7.0)
     screenshot("01_after_launch")
-    # Dismiss "Allow contacts" dialog if present
-    r2 = adb("shell dumpsys activity top")
-    top_out = r2.stdout.decode().lower() if r2.stdout else ""
-    if "permission" in top_out or "contacts" in top_out:
-        print("[*] Dismissing permissions dialog...")
-        adb("shell input tap 350 916")
-        time.sleep(1.5)
-        screenshot("02_after_dismiss_dialog")
     # Confirm TikTok is in foreground
     fg = _foreground_app()
     print(f"[*] Foreground app: {fg}")
