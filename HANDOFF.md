@@ -1,145 +1,189 @@
-# Handoff — TikTok Scraper Session 2026-04-20 (late evening)
+# Handoff — TikTok Scraper Session 2026-04-21 (early morning)
 
-## TL;DR — Where We Are
+## TL;DR
 
-**Four bugs fixed and pushed today.** Scraper is running on GCP2 as of mid-evening.
-Current production state unknown — check before assuming it's still running.
+- **GCP2 is stopped.** Hit a sort=1 filter-endpoint throttle after a second VM
+  came online using the same TikTok account. User decided to wait ~1 hour then
+  try GCP2 alone — first thing next session should be: check whether enough
+  time has passed and restart GCP2 if so.
+- **GCP4 (35.184.191.10) is being deleted by the user** — its IP is likely
+  flagged. Not in the fleet table anymore.
+- **GCP5 (104.198.27.100) is half-provisioned.** Waydroid stack was up,
+  TikTok session wiped via `pm clear`, cert mounted, but the sway/wayvnc/
+  show-full-ui processes died mid-debug when I killed/restarted them through
+  SSH without proper daemonization. User was logged into VNC and seeing a
+  black screen when the session ended. Needs the startup script re-run, then
+  user VNC-logs-in with a **different TikTok account**, then start scraper.
+- **Three fixes pushed today** (commits `dcd6257`, `ab2d9e3`, `57434bc`).
+  See "What Was Broken and What Was Fixed" below.
+- Queue state: 47 done, 3464 pending, 0 in_progress at session close
+  (approximate — run `python3 queue.py stats` to confirm).
 
-All fixes are in `main` (latest commit `b71ef23`). GCP VMs auto-pull via
-`run.sh` (`git fetch && git reset --hard origin/main`) on next restart.
+## Critical Discovery This Session
+
+**Do not run two VMs on the same TikTok account.** When GCP4 came online
+alongside GCP2 (both had the cloned session, so identical `device_id` /
+`install_id` / request-signing keys from `/data/data/com.tiktok.lite.go/`),
+TikTok's anti-abuse tripped within ~1 minute and started returning
+**truncated responses to `sort=1` (most-liked) queries only** — the default
+`sort=rel` search still worked fine.
+
+Throttle signature in `/tmp/mitmdump.log`:
+
+```
+sort=rel cursor=0: +19 videos (2 docs)
+sort=1   cursor=0: matched but 0 videos (1 docs, keys=['result_status', 'status_code', 'status_msg', 'chunk_index'])
+```
+
+A healthy response has keys
+`[result_status, status_code, data, qc, cursor, has_more, extra, log_pb]`.
+The blocked shape has `status_msg` + `chunk_index` instead of `data` — nothing
+to save. Both VMs hit this within 2 minutes of each other; GCP2 alone was
+still blocked ~7 min later when I retried.
+
+**Root cause is device-fingerprint-sharing, not IP.** The `device_id` is
+generated on first app launch and persists in `/data/data/com.tiktok.lite.go/`.
+Every API request signs with `X-Gorgon`/`X-Ladon`/`X-Argus` derived from
+device keys baked into the app data. Cloning the VM copies all of that, so
+TikTok sees "one device sending concurrent sort=1 streams from two IPs".
+A VPN would mask the IP but the device fingerprint would still collide.
+
+**Mitigation**: each VM runs on **its own TikTok account**, with its app
+data wiped via `adb shell pm clear com.tiktok.lite.go` before first login.
+Fresh login regenerates `device_id`/`install_id`. Runbook updated in
+`CLONE_SETUP.md` (Step 7, commit `ab2d9e3`).
+
+## Where GCP5 Is Stuck
+
+IP: `104.198.27.100`. Hostname set to `gcp5`. `.env` has `VM_NAME=GCP5`.
+
+Completed on GCP5:
+- Code pulled (latest main)
+- `/usr/local/bin/waydroid-start.sh` updated from repo
+- Waydroid stack brought up once (container RUNNING)
+- `/sdcard/mitmproxy-ca.pem` pushed via adb (missing on clone — fixed in commit `57434bc`)
+- `/system/etc/security/cacerts/c8750f0d.0` bind-mounted with hash `1b0dd7e2…`
+  matching host `~/.mitmproxy/mitmproxy-ca-cert.pem`
+- `pm clear com.tiktok.lite.go` executed → app data wiped
+- TikTok launched → "Sign up for TikTok" screen confirmed via screenshot
+
+NOT completed:
+- User could not VNC in — saw black screen. Tried to restart sway/wayvnc
+  but SSH background `&` without `disown` killed them on disconnect.
+  User closed session before I could re-run the full startup script.
+- TikTok login with second account is NOT done yet.
+- Scraper is NOT running on GCP5.
+
+### Resume plan for GCP5
+
+1. Re-run the startup script (cert mount will no-op since it's already bound,
+   but sway/wayvnc will come back — the updated script at `57434bc` now
+   survives the cert-missing case):
+
+   ```bash
+   ssh -i ~/.ssh/jamescvermont jamescvermont@104.198.27.100 \
+     "sudo bash /usr/local/bin/waydroid-start.sh 2>&1 | tail -20"
+   ```
+
+   If the bind-mount complains "already mounted", unmount first:
+   `sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- umount /system/etc/security/cacerts`
+
+2. Tell user to connect VNC to `104.198.27.100:5900` — should see the
+   TikTok Sign up / Log in screen (or FYP if `pm clear` state was somehow
+   lost; if FYP shows, re-run `adb -s 127.0.0.1:5556 shell pm clear com.tiktok.lite.go`).
+
+3. User logs in with a **different TikTok account** than the one on GCP2.
+   Expect slider captcha.
+
+4. Verify logged-in state by screenshotting:
+   ```bash
+   ssh -i ~/.ssh/jamescvermont jamescvermont@104.198.27.100 \
+     "adb -s 127.0.0.1:5556 shell screencap -p /sdcard/s.png && \
+      adb -s 127.0.0.1:5556 pull /sdcard/s.png /tmp/s.png"
+   scp -i ~/.ssh/jamescvermont jamescvermont@104.198.27.100:/tmp/s.png /tmp/gcp5.png
+   ```
+   Should show For You feed.
+
+5. Reset stuck terms and start scraper:
+   ```bash
+   ssh -i ~/.ssh/jamescvermont jamescvermont@104.198.27.100 \
+     "cd ~/tiktok-scraper && python3 queue.py reset && \
+      nohup bash run.sh >> /tmp/scraper.log 2>&1 &"
+   ```
+
+6. Add GCP5 to the fleet table in `CLONE_SETUP.md` once it's confirmed saving.
+
+### Resume plan for GCP2
+
+If user says > 1 hour has passed since 01:08 on 2026-04-21:
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251 \
+  "cd ~/tiktok-scraper && python3 queue.py reset && \
+   nohup bash run.sh >> /tmp/scraper.log 2>&1 &"
+```
+
+Watch first 2-3 terms. If sort=1 returns normal `+N videos` shape → throttle
+cleared, resume normal ops. If still blocked → longer cooldown needed, or
+the account itself is flagged and needs a fresh login / new account.
 
 ## What Was Broken and What Was Fixed
 
-### 1. Cursor=0 first page was never being captured (multi-layer bug)
+### 1. Repo `waydroid-start.sh` was missing the cert bind-mount (`dcd6257`)
 
-Three stacked bugs each hid the next one. Root-cause summary:
+The clone runbook does `sudo cp waydroid-start.sh /usr/local/bin/` which
+overwrote GCP2's richer inherited copy with a stale repo version. That stale
+version had no mitmproxy cert bind-mount at all — the Android container's
+`/system/etc/security/cacerts/c8750f0d.0` stayed as the stock Android CA and
+every TikTok TLS handshake failed. Restored the bind-mount block. Also added
+`modprobe binder_linux` at the top of the script so clones where the module
+isn't autoloaded self-heal.
 
-| Bug | Fix | Commit |
-|---|---|---|
-| `mobile_scrape.py` shipped an embedded copy of `tt_dump.py` (`DUMP_SCRIPT_SRC`) and overwrote the on-disk file with that stale copy at every scraper start. Explains why the prior session's `tt_dump.py` edits appeared to have no effect. | Removed embedded copy; `start_mitmproxy` now just verifies `tt_dump.py` exists. | `eb5d1fa` |
-| `tt_dump.py` did `gzip.decompress(flow.response.content)` — but mitmproxy already decodes `Content-Encoding`. Every response failed to parse as JSON silently. | Removed manual decompression; dump raw body on parse failure. | `d7db2c2` |
-| `/search/stream/` (cursor=0 endpoint) returns HTTP chunked transfer encoding + two concatenated JSON docs in one body. mitmproxy does NOT strip chunked framing; `json.loads` only reads one doc. | `_dechunk()` strips framing. `_parse_json_docs()` uses `JSONDecoder.raw_decode` in a loop. | `62ac300` |
+### 2. `MAX_CONSECUTIVE_EMPTY` bumped 2 → 3 (`dcd6257`)
 
-Verified locally: "spoonie" cursor=0 now yields 10 videos with top likes 2.8M, 2.3M, 2.2M, 1.8M — previously lost. Total saved jumped from ~75 to ~85 on a typical term.
+User requested. Tolerates occasional transient UI glitches without stopping.
+Docstring + log messages updated to use the constant instead of a hard-coded 2.
 
-### 2. Slash in keyword crashed file writes
+### 3. CLONE_SETUP runbook: wipe session, fresh login per VM (`ab2d9e3`)
 
-Keywords like `1/144 scale` → `/tmp/tt_1/144 scale_1.jsonl` → `FileNotFoundError`.
-Also caused a cascade: after `1/144 scale` crashed mid-UI, TikTok was left in a
-weird state, so the next term (`backrooms`) captured zero → 2-consecutive-empty
-circuit breaker fired.
+Step 7 rewritten to `pm clear com.tiktok.lite.go` before login. "What the
+Clone Inherits" table: TikTok session row changed from "Inherited" to
+"Wiped in Step 7 — fresh login required on its own account". Session
+Transfer section removed entirely. Troubleshooting row for "TikTok asks to
+log in" updated to reflect that this is now the expected state on a fresh
+clone. GCP4 dropped from the fleet table.
 
-Fix: `safe_keyword()` helper in **both** `mobile_scrape.py` and `tt_dump.py`
-(they must match exactly). Applied everywhere `/tmp/tt_<keyword>_<sort>.jsonl`
-is constructed. Commit `0a6909f`.
+### 4. `waydroid-start.sh` self-heals missing `/sdcard/mitmproxy-ca.pem` (`57434bc`)
 
-### 3. 0-save terms were being marked `done` and never retried
+GCP5's machine image didn't carry `/sdcard/mitmproxy-ca.pem`, so the
+bind-mount's `cp /sdcard/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0` silently
+failed (the old `2>/dev/null` was masking it), and the bind-mount completed
+on a directory without the intended override — stock Android CA stayed in
+place, TLS failed. Fix: script now `adb push`es the cert from
+`~jamescvermont/.mitmproxy/mitmproxy-ca-cert.pem` if `/sdcard/` doesn't
+have it, and the `2>/dev/null` on `cp` was removed so future failures
+surface loudly.
 
-[scrape_forever.py](scrape_forever.py) was calling `qmod.mark_done(term_id, videos_saved=0)`
-for terms that returned 0 videos. Those terms were retired permanently even
-when the 0 was transient (UI glitch, cascade from a prior crash, etc.).
-
-Fix: added `mark_retry(term_id)` to [queue.py](queue.py) that resets the term
-to `status='pending', started_at=NULL, completed_at=NULL`. Both
-`scrape_forever.py` and `batch_scrape.py` now call `mark_retry` when `saved==0`
-and `mark_done` only when `saved>0`. Commit `b71ef23`.
-
-The 2-consecutive-empty circuit breaker still stops the scraper after two
-consecutive 0-save runs, so a persistently broken term won't retry-loop forever
-— the scraper halts and writes `SCRAPER_STATUS.txt`.
-
-## Outstanding: Historical 0-Save Terms
-
-Terms already marked `done` with `videos_saved = 0` (or NULL) before the fix
-won't be retroactively retried. To surface them:
-
-```sql
-SELECT term, completed_at FROM terms
-WHERE status='done' AND (videos_saved IS NULL OR videos_saved = 0)
-ORDER BY completed_at DESC;
-```
-
-User hasn't decided whether to reset those yet. If they want them retried:
-
-```sql
-UPDATE terms
-SET status='pending', started_at=NULL, completed_at=NULL, videos_saved=NULL
-WHERE status='done' AND (videos_saved IS NULL OR videos_saved = 0);
-```
-
-Run this only with user confirmation.
-
-## Current GCP2 State
-
-- IP: `34.153.25.251`
-- Scraper: restarted earlier this evening after all 4 fixes pushed. Verify
-  before assuming it's still running:
-  ```bash
-  ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251 \
-    "tail -30 /tmp/scraper.log && echo --- && cat ~/tiktok-scraper/SCRAPER_STATUS.txt | tail -20"
-  ```
-- Last observed run: Path of Exile → 46 saved, then numerology → 0 saved,
-  then circuit breaker fired (that was the stop that prompted the `mark_retry`
-  fix). With `mark_retry` in place, numerology should now re-enter the pool on
-  next run.
-
-## Doc Changes (Also in b71ef23)
-
-- [CLAUDE.md](CLAUDE.md) — added `tt_dump.py` to Key Files, fixed ADB port 5555→5556,
-  added cursor=0 + slash-keyword quirks, added **Workflow** section that says
-  "always commit+push after any change, no confirmation."
-- [CLONE_SETUP.md](CLONE_SETUP.md) — one architecture line mentions both
-  `/search/stream/` and `/search/single/`. Rest of the file has known-stale
-  sections (see below).
-
-## What I Did NOT Finish
-
-CLONE_SETUP.md still has stale content I began editing but didn't complete:
-
-1. **Line ~272**: describes `run.sh` as `git pull --ff-only` — actually
-   `git fetch && git reset --hard origin/main` (commit `cdca963`).
-2. **Lines ~336-337**: describes `scroll_smart` as stopping when ≥3-of-10
-   videos have <5000 likes — that logic was removed in `3a12e38`. Now always
-   scrolls to `max_scrolls` (default 33) unless TikTok stops returning new content.
-3. **Line ~338** ("How the Scraper Works" step 6): says mitmproxy intercepts
-   `/search/single/` only — should also mention `/search/stream/` for cursor=0.
-4. **Lines ~389-391**: says `clear_proxy()` runs after each term — actually
-   runs once at shutdown (in the `finally:` block of both runners).
-5. **Line ~329** ("How the Scraper Works" step 1): says the scraper "writes
-   tt_dump.py to disk" — no longer true as of `eb5d1fa`. The file is on disk
-   and under version control; scraper only verifies it exists.
-6. **"Key Files" table** (line ~308): missing `tt_dump.py` row.
-7. **"Critical Quirks"**: could use the cursor=0 chunked + slash-keyword
-   quirks, matching what's already in CLAUDE.md.
-
-The user told me "(only if needed)" for doc rewrites, so these are genuine
-staleness fixes, not stylistic rewrites. Safe to proceed without asking.
-
-## Key Files to Read First
-
-- [tt_dump.py](tt_dump.py) — mitmproxy addon; `_dechunk` and `_parse_json_docs`
-- [mobile_scrape.py](mobile_scrape.py) — `safe_keyword`, `start_mitmproxy` (no
-  longer writes the addon), `scroll_smart` (always 33 scrolls)
-- [scrape_forever.py:162-170](scrape_forever.py#L162-L170) — new 0-save retry branch
-- [queue.py:139-170](queue.py#L139-L170) — `mark_failed`, new `mark_retry`
-- [CLAUDE.md](CLAUDE.md) — project-wide notes (kept current)
-
-## Infrastructure (unchanged)
+## Infrastructure
 
 | Name | IP | Status |
 |---|---|---|
-| GCP2 | `34.153.25.251` | Scraping (verify) |
-| GCP3 | `34.59.191.130` | Pending — clean install, not yet provisioned |
-| GCP4 | TBD | Not yet cloned |
+| GCP2 | `34.153.25.251` | Stopped — throttle cooldown. Resume after ~1h from 2026-04-21 01:08. |
+| GCP5 | `104.198.27.100` | Half-provisioned — needs sway/wayvnc restart, then user login with second account. |
 
-- Oracle VPS: `150.136.40.239` — PostgreSQL `tiktoks` DB, user `app1_user`, pw `app1dev`
-- Queue: `terms` table, check `python3 queue.py stats`
-- ntfy topic: `retardedjames-tiktok` (VM_NAME-tagged, NTFY_PER_TERM=1 on GCP2)
-- SSH: `ssh -i ~/.ssh/jamescvermont jamescvermont@<IP>`
+- Oracle VPS (DB): `150.136.40.239`, `PGPASSWORD=app1dev psql -U app1_user -h 150.136.40.239 -d tiktoks`
+- ntfy: `retardedjames-tiktok`
+- SSH key: `~/.ssh/jamescvermont`
 
 ## Workflow Preferences (from CLAUDE.md)
 
-- **Always commit+push after any code change** — no confirmation. Production
-  VMs pull from `main` via `run.sh`; unpushed changes never reach production.
-- User is on Opus and closes sessions aggressively to manage cost — expect
-  frequent context handoffs via this file.
+- Commit + push after every code change, no confirmation needed.
+- User closes sessions aggressively to manage cost — expect frequent handoffs via this file.
+- User-requested threshold: 3 consecutive empty runs (was 2) before circuit breaker.
+
+## Key Files to Read First
+
+- [CLONE_SETUP.md](CLONE_SETUP.md) — primary runbook; Step 7 now wipes the session
+- [waydroid-start.sh](waydroid-start.sh) — self-healing cert push + bind-mount (lines 88-104)
+- [scrape_forever.py:40](scrape_forever.py#L40) — MAX_CONSECUTIVE_EMPTY = 3
+- [queue.py](queue.py) — `mark_done`, `mark_retry`, `mark_failed`, `reset_all`
