@@ -35,6 +35,7 @@ Multiple VMs pull from the same shared queue (`terms` table, `FOR UPDATE SKIP LO
 | Name | IP | Status |
 |---|---|---|
 | GCP2 | `34.153.25.251` | Active — reference/source image |
+| GCP5 | `104.198.27.100` | Provisioned — awaiting TikTok login via VNC, then start scraper |
 
 SSH: `ssh -i ~/.ssh/jamescvermont jamescvermont@<VM_IP>`
 VNC: `<VM_IP>:5900` (no password) — for monitoring/login only

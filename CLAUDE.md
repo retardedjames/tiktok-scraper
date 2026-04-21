@@ -63,7 +63,7 @@ python3 queue.py import search_terms.txt search  # add new terms
 | Name | IP | Status |
 |---|---|---|
 | GCP2 | `34.153.25.251` | Active — scraping |
-| GCP3 | `34.59.191.130` | Pending — clean install, not yet provisioned |
+| GCP5 | `104.198.27.100` | Provisioned — awaiting TikTok login via VNC, then start scraper |
 
 SSH: `ssh -i ~/.ssh/jamescvermont jamescvermont@<IP>`
 
