@@ -258,6 +258,19 @@ def check_screen_on() -> bool:
     return True
 
 
+def check_stay_awake() -> bool:
+    """Keep the screen on while plugged into USB/AC so UI automation doesn't
+    go dark mid-scrape. Value 3 = USB + AC. Persists only while plugged in."""
+    _adb("shell settings put global stay_on_while_plugged_in 3")
+    r = _adb("shell settings get global stay_on_while_plugged_in")
+    val = r.stdout.strip()
+    if val == "3":
+        _ok("Stay-awake while charging: ON")
+    else:
+        _warn(f"stay_on_while_plugged_in={val!r} (expected 3)")
+    return True
+
+
 def check_stale_proxy() -> bool:
     r = _adb("shell settings get global http_proxy")
     val = r.stdout.strip()
@@ -307,6 +320,7 @@ def run_all(require_device: bool = True) -> bool:
     if device_ok:
         results.append(check_tiktok_installed())
         results.append(check_screen_on())
+        results.append(check_stay_awake())
         results.append(check_stale_proxy())
         check_mitmproxy_cert()  # warn-only
         report_coords()
