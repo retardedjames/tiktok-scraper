@@ -73,6 +73,26 @@ for i in $(seq 1 40); do
     sleep 3
 done
 
+# Pre-authorize host ADB key in container BEFORE any adb command is run below.
+# Without this, `adb connect` returns "unauthorized" and the cert push fails,
+# which `set -e` propagates up and kills the caller (vps_clone_init.sh).
+ADBPUB=/home/$WAYDROID_USER/.android/adbkey.pub
+if [ ! -f "$ADBPUB" ]; then
+    echo "[*] Generating host ADB keypair..."
+    sudo -u $WAYDROID_USER mkdir -p /home/$WAYDROID_USER/.android
+    sudo -u $WAYDROID_USER adb keygen "$ADBPUB" 2>/dev/null || \
+        sudo -u $WAYDROID_USER sh -c 'adb start-server >/dev/null 2>&1; adb kill-server >/dev/null 2>&1'
+fi
+if [ -f "$ADBPUB" ]; then
+    echo "[*] Pre-authorizing host ADB key in Waydroid container..."
+    ADBKEY=$(cat "$ADBPUB")
+    lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c \
+        "mkdir -p /data/misc/adb && echo \"$ADBKEY\" > /data/misc/adb/adb_keys && chmod 640 /data/misc/adb/adb_keys"
+    # Force client to reconnect so adbd re-reads the keys file
+    sudo -u $WAYDROID_USER adb kill-server >/dev/null 2>&1 || true
+    sleep 1
+fi
+
 echo "[*] Setting up socat ADB proxy on port 5556..."
 CPID=$(lxc-info -P /var/lib/waydroid/lxc -n waydroid 2>/dev/null | grep 'PID:' | awk '{print $2}')
 if [ -z "$CPID" ]; then

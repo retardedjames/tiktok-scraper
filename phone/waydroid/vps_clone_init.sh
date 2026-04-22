@@ -86,8 +86,10 @@ while ! $ADB shell getprop sys.boot_completed 2>/dev/null | grep -q 1; do
 done
 ok "Android booted"
 
-# ── 8. Authorize ADB key ──────────────────────────────────────────────────────
-hdr "ADB key authorization"
+# ── 8. Authorize ADB key (defensive — waydroid-start.sh already did this) ────
+# waydroid-start.sh installs /data/misc/adb/adb_keys before its own cert push;
+# re-running here is idempotent and covers the case where the key changed.
+hdr "ADB key authorization (defensive re-check)"
 if [[ ! -f ~/.android/adbkey.pub ]]; then
     adb keygen ~/.android/adbkey
 fi
