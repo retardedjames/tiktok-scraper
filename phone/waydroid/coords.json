@@ -1,0 +1,14 @@
+{
+  "width": 1080,
+  "height": 2400,
+  "SEARCH_ICON": [1020, 170],
+  "SEARCH_FIELD": [504, 140],
+  "SEARCH_CLEAR_BTN": [820, 140],
+  "SEARCH_BTN": [970, 140],
+  "VIDEOS_TAB": [500, 201],
+  "FILTER_ICON": [1020, 140],
+  "LIKE_COUNT_BTN": [430, 2150],
+  "APPLY_BTN": [948, 1175],
+  "SWIPE_START_Y": [540, 1787],
+  "SWIPE_END_Y": [540, 596]
+}
