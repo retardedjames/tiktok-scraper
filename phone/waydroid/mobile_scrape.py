@@ -190,14 +190,17 @@ def launch_tiktok():
     r = adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
     out = r.stdout.decode().strip() if r.stdout else ""
     print(f"[*] TikTok launch: exit={r.returncode} {out[:80]}")
-    time.sleep(6.0)
+    # Waydroid on a GCP VM is noticeably slower than a real phone — MainActivity
+    # shows up in dumpsys ~3s after am start, but the FYP's search icon isn't
+    # tap-responsive for another ~8-10s while TikTok loads the video feed.
+    time.sleep(12.0)
     screenshot("01_after_launch")
     fg = _foreground_app()
     print(f"[*] Foreground app: {fg}")
     if "tiktok" not in fg:
         print("[!] TikTok not in foreground after launch — retrying...")
         adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
-        time.sleep(8.0)
+        time.sleep(12.0)
         screenshot("03_after_launch_retry")
         fg = _foreground_app()
         print(f"[*] Foreground app after retry: {fg}")
@@ -208,7 +211,7 @@ def _ensure_tiktok_foreground():
     if "tiktok" not in fg:
         print(f"[!] TikTok not in foreground (got: {fg}) — re-launching...")
         adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
-        time.sleep(8.0)
+        time.sleep(12.0)
         fg = _foreground_app()
         print(f"[*] Foreground after re-launch: {fg}")
 
@@ -232,7 +235,7 @@ def search_and_sort(keyword: str, videos_tab_first: bool = True):
     for attempt in range(3):
         print(f"[*] Tapping search icon (attempt {attempt + 1})...")
         adb_tap(*c.SEARCH_ICON)
-        time.sleep(2.0)
+        time.sleep(3.5)
         screenshot(f"{tag}_B_after_search_tap")
         fg_act = _foreground_activity()
         on_search = "FeedSearch" in fg_act or "Search" in fg_act
@@ -246,7 +249,7 @@ def search_and_sort(keyword: str, videos_tab_first: bool = True):
         adb("shell am force-stop com.tiktok.lite.go")
         time.sleep(1.5)
         adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
-        time.sleep(7.0)
+        time.sleep(12.0)
         fg_act = _foreground_activity()
         print(f"[*] Foreground after relaunch: {fg_act!r}")
     else:
