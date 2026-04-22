@@ -91,7 +91,14 @@ def _foreground_app() -> str:
 
 def _foreground_activity() -> str:
     """Return the activity class of the currently focused window. Prefers a
-    TikTok focus over other displays (Waydroid dual-focus)."""
+    TikTok focus over other displays (Waydroid dual-focus).
+
+    Waydroid emits multiple mCurrentFocus lines — when TikTok opens a
+    sub-activity (e.g. FeedSearchActivity) the new window appears on a
+    *second* focus line while the old MainActivity stays on the first.
+    We prefer the non-MainActivity TikTok window so the scraper can
+    detect search, filter, etc.
+    """
     r = subprocess.run(_adb_base() + ["shell", "dumpsys", "window"], capture_output=True)
     out = r.stdout.decode() if r.stdout else ""
     lines = []
@@ -105,9 +112,12 @@ def _foreground_activity() -> str:
                 lines.append((pkg, act))
             except Exception:
                 pass
-    for pkg, act in lines:
-        if "tiktok" in pkg:
-            return act
+    # Collect all TikTok activities, prefer non-MainActivity (sub-activities
+    # like FeedSearchActivity indicate a deeper UI state).
+    tiktok_acts = [act for pkg, act in lines if "tiktok" in pkg]
+    if tiktok_acts:
+        non_main = [a for a in tiktok_acts if "MainActivity" not in a]
+        return non_main[0] if non_main else tiktok_acts[0]
     return lines[0][1] if lines else ""
 
 
