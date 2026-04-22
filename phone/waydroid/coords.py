@@ -69,16 +69,27 @@ class Coords:
 
 
 def get_device_size(adb_base: list = None) -> tuple:
-    """Return (width, height) from `adb shell wm size`, or reference if unavailable."""
+    """Return (width, height) from `adb shell wm size`, or reference if unavailable.
+
+    `wm size` output on Waydroid looks like:
+        Physical size: 1276x693
+        Override size: 1080x2400
+    The effective render resolution is the override when it's present
+    (vps_clone_init.sh step 9 sets an override on every clone), so prefer it.
+    """
     base = adb_base or ["adb"]
     try:
         r = subprocess.run(base + ["shell", "wm", "size"], capture_output=True, text=True, timeout=5)
-        # Output: "Physical size: 1080x2400"  (and optionally "Override size: ...")
+        physical = override = None
         for line in r.stdout.splitlines():
-            if "size:" in line.lower():
-                dims = line.split(":")[-1].strip()
-                w, h = dims.split("x")
-                return int(w), int(h)
+            low = line.lower()
+            if "override size:" in low:
+                w, h = line.split(":", 1)[1].strip().split("x")
+                override = (int(w), int(h))
+            elif "physical size:" in low:
+                w, h = line.split(":", 1)[1].strip().split("x")
+                physical = (int(w), int(h))
+        return override or physical or (REFERENCE_WIDTH, REFERENCE_HEIGHT)
     except Exception:
         pass
     return REFERENCE_WIDTH, REFERENCE_HEIGHT
