@@ -69,6 +69,9 @@ def response(flow: http.HTTPFlow):
 
     if "search" not in path:
         return
+
+    print(f"[URL] {flow.request.method} {flow.request.pretty_url}", flush=True)
+
     if not ("search/item" in path or "search/stream" in path or "search/single" in path):
         return
 
@@ -107,6 +110,8 @@ def response(flow: http.HTTPFlow):
         print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: +{len(videos)} videos "
               f"({len(docs)} docs)", flush=True)
     else:
-        keys = list(docs[0].keys())[:8] if docs else []
+        d0 = docs[0] if docs else {}
+        keys = list(d0.keys())[:8]
+        sc = d0.get("status_code"); sm = d0.get("status_msg", "")
         print(f"[mitmproxy] {keyword} sort={sort_type} cursor={cursor}: matched but 0 videos "
-              f"({len(docs)} docs, keys={keys})", flush=True)
+              f"({len(docs)} docs, keys={keys}, status_code={sc!r}, status_msg={sm!r})", flush=True)
