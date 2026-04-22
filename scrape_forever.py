@@ -10,7 +10,7 @@ Usage:
   python3 scrape_forever.py [--min-likes 5000] [--debug]
 
 Environment:
-  ADB_DEVICE=127.0.0.1:5555   target a specific ADB device (required on GCP2)
+  ADB_DEVICE=127.0.0.1:5555   target a specific ADB device (required on the VM itself)
 """
 import argparse
 import os
@@ -33,7 +33,7 @@ if os.path.exists(_env):
 
 STATUS_FILE = os.path.join(SCRIPT_DIR, "SCRAPER_STATUS.txt")
 NTFY_TOPIC        = os.environ.get("NTFY_TOPIC", "retardedjames-tiktok")
-VM_NAME           = os.environ.get("VM_NAME", "unknown-vm")  # e.g. GCP2, GCP3
+VM_NAME           = os.environ.get("VM_NAME", "unknown-vm")  # e.g. JC1, JC2
 # Set NTFY_PER_TERM=1 in .env to get a notification after every scraped term.
 NTFY_PER_TERM     = os.environ.get("NTFY_PER_TERM", "0") == "1"
 

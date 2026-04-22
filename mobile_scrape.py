@@ -19,8 +19,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DUMP_SCRIPT = os.path.join(SCRIPT_DIR, "tt_dump.py")
 
 # Set ADB_DEVICE to target a specific device, e.g.:
-#   ADB_DEVICE=127.0.0.1:5555  (on GCP2 itself, local Waydroid)
-#   ADB_DEVICE=34.153.25.251:5556  (from WSL2, remote)
+#   ADB_DEVICE=127.0.0.1:5555  (on the VM itself, local Waydroid)
+#   ADB_DEVICE=<VM_IP>:5556    (from WSL2, remote)
 _ADB_DEVICE = os.environ.get("ADB_DEVICE", "")
 
 # UI coordinates (720x1612 screen) — verified against Waydroid screenshots

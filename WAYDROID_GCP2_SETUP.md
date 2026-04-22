@@ -37,10 +37,9 @@ All VMs are provisioned identically. Current fleet:
 
 | Name | IP | Status |
 |---|---|---|
-| GCP2 | `34.153.25.251` | Active — scraping |
-| GCP3 | `34.59.191.130` | Pending provisioning — clean Ubuntu 25.10, packages not yet installed |
+| JC1 | `34.30.234.222` | Active |
 
-To provision GCP3: follow all steps in this document top to bottom, substituting `34.59.191.130` for `<VM_IP>`. Use the session transfer (Step 10 Option A) to copy TikTok login from GCP2.
+To provision a new VM: follow all steps in this document top to bottom, substituting the new VM's IP for `<VM_IP>`.
 
 **Required VM specs:**
 - **Provider:** Google Cloud (any region)
@@ -232,18 +231,21 @@ Package name: `com.tiktok.lite.go`
 
 **Option A — Transfer session from an existing VM (preferred, no captcha)**
 
-GCP2 is the reference VM with a working logged-in TikTok session. Copy its app data
+Pick an existing VM with a working logged-in TikTok session. Copy its app data
 to the new VM's Android container. Do this AFTER Waydroid is fully booted on the new VM.
 
+> Note: session transfer is discouraged — sharing device fingerprints across VMs trips
+> TikTok's anti-abuse. Prefer Option B (fresh login per VM). See `CLONE_SETUP.md`.
+
 ```bash
-# On GCP2: export TikTok's app data directory
+# On the source VM: export TikTok's app data directory
 # Note: pipe to tee — writing to /tmp inside lxc-attach targets the container's /tmp, not the host's
-ssh -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251 \
+ssh -i ~/.ssh/jamescvermont jamescvermont@<SOURCE_VM_IP> \
   "sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- \
    tar -czf - -C /data/data com.tiktok.lite.go | sudo tee /tmp/tiktok_session.tar.gz > /dev/null"
 
-# Copy the archive from GCP2 to local, then to the new VM
-scp -i ~/.ssh/jamescvermont jamescvermont@34.153.25.251:/tmp/tiktok_session.tar.gz /tmp/
+# Copy the archive from source to local, then to the new VM
+scp -i ~/.ssh/jamescvermont jamescvermont@<SOURCE_VM_IP>:/tmp/tiktok_session.tar.gz /tmp/
 scp -i ~/.ssh/jamescvermont /tmp/tiktok_session.tar.gz jamescvermont@<NEW_VM_IP>:/tmp/
 
 # On the new VM: force-stop TikTok, restore app data, fix permissions
@@ -306,7 +308,7 @@ Then on the VM, create `.env`:
 ```bash
 cat > ~/tiktok-scraper/.env << 'EOF'
 ADB_DEVICE=127.0.0.1:5556
-VM_NAME=GCP3
+VM_NAME=JC2
 NTFY_TOPIC=retardedjames-tiktok
 NTFY_PER_TERM=0
 EOF

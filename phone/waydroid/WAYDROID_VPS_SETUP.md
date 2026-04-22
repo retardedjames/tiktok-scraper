@@ -38,8 +38,7 @@ dial in exact coords per screen.
 after the apt/pip prerequisites are installed but **before** `waydroid init`.
 Future clones boot from that snapshot and run `vps_clone_init.sh`.
 
-The original source VM (`136.114.251.49`) is no longer active — once the
-snapshot exists, the source can be torn down.
+Once the snapshot exists, the source VM can be torn down.
 
 **Included in the base snapshot:**
 

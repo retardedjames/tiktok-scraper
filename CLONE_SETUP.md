@@ -2,8 +2,8 @@
 
 **This is the primary reference for all new VMs and for Claude agents doing VM work.**
 
-New VMs are created from a GCP machine image of GCP2 — not provisioned from scratch.
-When the user gives you a new VM's IP (and name, e.g. "GCP4"), you run the provisioning
+New VMs are created from a GCP machine image — not provisioned from scratch.
+When the user gives you a new VM's IP (and name, e.g. "JC2"), you run the provisioning
 runbook below end-to-end without asking for help. The user should not have to do anything.
 
 SSH key: `~/.ssh/jamescvermont`
@@ -34,8 +34,7 @@ Multiple VMs pull from the same shared queue (`terms` table, `FOR UPDATE SKIP LO
 
 | Name | IP | Status |
 |---|---|---|
-| GCP2 | `34.153.25.251` | Active — reference/source image |
-| GCP5 | `104.198.27.100` | Provisioned — awaiting TikTok login via VNC, then start scraper |
+| JC1 | `34.30.234.222` | Active |
 
 SSH: `ssh -i ~/.ssh/jamescvermont jamescvermont@<VM_IP>`
 VNC: `<VM_IP>:5900` (no password) — for monitoring/login only
@@ -66,7 +65,7 @@ terms          — scrape queue (term, type, status, videos_saved, ...) — shar
 
 ## Provisioning Runbook (Claude executes this, not the user)
 
-Given: a new VM IP and name (e.g. `34.x.x.x`, `GCP4`). Execute each step in order,
+Given: a new VM IP and name (e.g. `34.x.x.x`, `JC2`). Execute each step in order,
 verify before proceeding, and do not stop until `scrape_forever.py` is confirmed running.
 
 ### Step 1 — Confirm SSH access
@@ -249,7 +248,7 @@ Then log in manually via VNC:
    '
    ```
    Verify with `tail /tmp/mitmdump.log` — you should see `+N videos` lines, not `ssl/tls alert certificate unknown`.
-4. Log in to TikTok Lite with a **different account** than the one on GCP2
+4. Log in to TikTok Lite with a **different account** than any existing VM's account
 5. Expect a slider captcha on first login — click and drag (sway supports the virtual pointer protocol)
 
 Verify the feed is reachable before proceeding:
@@ -295,7 +294,7 @@ shows errors or `SCRAPER_STATUS.txt` was written, diagnose before reporting succ
 Update the VM fleet table in this file (`CLONE_SETUP.md`) to add the new VM:
 
 ```
-| GCP4 | `34.x.x.x` | Active — scraping |
+| JC2 | `34.x.x.x` | Active — scraping |
 ```
 
 ---

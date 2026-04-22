@@ -1,7 +1,7 @@
 #!/bin/bash
 # Waydroid full-stack startup script.
 # Run as root: sudo bash /usr/local/bin/waydroid-start.sh
-# This file lives locally at emulator/waydroid-start.sh — copy to GCP2 at /usr/local/bin/waydroid-start.sh
+# This file lives locally at emulator/waydroid-start.sh — copy to the VM at /usr/local/bin/waydroid-start.sh
 set -e
 
 WAYDROID_USER=jamescvermont

@@ -31,7 +31,7 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Set ADB_DEVICE to skip auto-detection and use a specific device directly.
-# e.g. ADB_DEVICE=127.0.0.1:5555 when running on GCP2 itself.
+# e.g. ADB_DEVICE=127.0.0.1:5555 when running on the VM itself.
 ADB_DEVICE = os.environ.get("ADB_DEVICE", "")
 
 EMULATOR_ADB_PORT = int(os.environ.get("EMULATOR_ADB_PORT", "5554"))
