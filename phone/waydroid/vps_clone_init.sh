@@ -6,12 +6,13 @@
 # scrape. Run it once on each new clone.
 #
 # Usage:
-#   bash ~/tiktok-scraper/waydroid/vps_clone_init.sh
+#   bash ~/tiktok-scraper/phone/waydroid/vps_clone_init.sh
 #
 # After this script finishes:
 #   1. VNC to <this-ip>:5900 and log into TikTok with a FRESH account.
-#   2. Copy .env: cp .env.example .env && nano .env   (set VM_NAME)
-#   3. Start scraper: nohup bash run.sh >> /tmp/scraper.log 2>&1 &
+#   2. Start scraper: nohup bash run.sh >> /tmp/scraper.log 2>&1 &
+# .env is generated automatically (VM_NAME derived from external IP / hostname).
+# A systemd unit (waydroid-stack.service) auto-restarts the stack on reboot.
 
 set -e
 BOLD='\033[1m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
@@ -177,18 +178,62 @@ $ADB shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage
 sleep 5
 ok "TikTok launched — proceed to VNC for login"
 
+# ── 16. Generate .env ────────────────────────────────────────────────────────
+# VM_NAME uniqueness is what ntfy messages key on. Derive it from the GCP
+# external IP (falls back to hostname) so clones get distinct names with no
+# manual editing.
+hdr "Generate .env"
+EXT_IP=$(curl -sf -m 2 -H 'Metadata-Flavor: Google' \
+    http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip \
+    2>/dev/null || true)
+VM_NAME_VAL="vps-${EXT_IP:-$(hostname)}"
+if [[ ! -f "$SELF_DIR/.env" ]]; then
+    sed "s/^VM_NAME=.*/VM_NAME=$VM_NAME_VAL/" "$SELF_DIR/.env.example" > "$SELF_DIR/.env"
+    ok ".env written with VM_NAME=$VM_NAME_VAL"
+else
+    ok ".env already exists — leaving alone"
+fi
+
+# ── 17. Install systemd unit so the stack survives reboots ───────────────────
+# waydroid-container.service alone is not enough: the session/sway/wayvnc/socat
+# layers need waydroid-start.sh. Without this unit the VPS comes back from a
+# reboot with "waydroid-container active" but adb offline — see WAYDROID_VPS_SETUP.md.
+hdr "systemd auto-restart unit"
+sudo tee /etc/systemd/system/waydroid-stack.service > /dev/null <<EOF
+[Unit]
+Description=Waydroid full stack (session + sway + wayvnc + adb proxy + cert)
+After=network-online.target waydroid-container.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/waydroid-start.sh
+# If Android userspace fails to boot, waydroid-start.sh exits 1 and the whole
+# unit fails — which is what we want (no silent adb-offline state).
+TimeoutStartSec=420
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable waydroid-stack.service
+ok "waydroid-stack.service enabled — stack auto-starts on boot"
+
 echo ""
 echo -e "${BOLD}=======================================================${NC}"
-echo -e "${BOLD} Initialization complete — remaining manual steps${NC}"
+echo -e "${BOLD} Initialization complete${NC}"
 echo -e "${BOLD}=======================================================${NC}"
 echo ""
-echo "1. VNC: <this-ip>:5900 (no password)"
-echo "   Log into TikTok with a FRESH account (not used on another VM)."
+echo "Only ONE manual step remains (TikTok login):"
 echo ""
-echo "2. Create .env:"
-echo "   cd $SELF_DIR"
-echo "   cp .env.example .env && nano .env   # set VM_NAME uniquely"
+echo "  1. VNC to <this-ip>:5900 (no password), log into TikTok with a"
+echo "     FRESH account (never used on another VM)."
 echo ""
-echo "3. Start scraper:"
-echo "   nohup bash $SELF_DIR/run.sh >> /tmp/scraper.log 2>&1 &"
-echo "   tail -f /tmp/scraper.log"
+echo "  2. Start scraper:"
+echo "       cd $SELF_DIR"
+echo "       nohup bash run.sh >> /tmp/scraper.log 2>&1 &"
+echo "       tail -f /tmp/scraper.log"
+echo ""
+echo "Fingerprint this VM for bot-detection audits:"
+echo "  bash $SELF_DIR/device_fingerprint.sh"
