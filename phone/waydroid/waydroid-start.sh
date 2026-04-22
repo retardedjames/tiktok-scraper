@@ -112,6 +112,18 @@ if [ ! -f "$HOST_CERT" ]; then
     exit 1
 fi
 sudo -u $WAYDROID_USER adb connect 127.0.0.1:5556 >/dev/null 2>&1
+# Wait for Android userspace boot before touching /sdcard — adbd comes up on 5555
+# before vold has FUSE-mounted /sdcard, so an early push fails with
+# "remote couldn't create file: No such file or directory".
+echo "[*] Waiting for sys.boot_completed (up to 3 min)..."
+for i in $(seq 1 60); do
+    BC=$(sudo -u $WAYDROID_USER adb -s 127.0.0.1:5556 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n')
+    [ "$BC" = "1" ] && echo "[*] Android userspace booted" && break
+    sleep 3
+done
+if [ "$BC" != "1" ]; then
+    echo "[!] Android did not finish booting in 3 min"; exit 1
+fi
 if ! sudo -u $WAYDROID_USER adb -s 127.0.0.1:5556 shell 'ls /sdcard/mitmproxy-ca.pem' 2>/dev/null | grep -q mitmproxy-ca; then
     echo "[*] Pushing host cert to /sdcard/mitmproxy-ca.pem..."
     sudo -u $WAYDROID_USER adb -s 127.0.0.1:5556 push "$HOST_CERT" /sdcard/mitmproxy-ca.pem
