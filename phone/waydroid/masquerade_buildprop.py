@@ -4,11 +4,13 @@ Masquerade Waydroid's build.prop files to appear as a Google Pixel 6.
 
 Usage (on the GCP VM):
     sudo waydroid session stop
-    python3 masquerade_buildprop.py
+    sudo python3 masquerade_buildprop.py
     sudo bash /usr/local/bin/waydroid-start.sh &
 
 What this does:
-- Reads each rootfs build.prop
+- Mounts system.img and vendor.img read-only so their build.prop files are
+  readable (on img-based Waydroid, /var/lib/waydroid/rootfs/ is empty when
+  the session is STOPPED — the images are only mounted during an active session)
 - Rewrites brand/model/manufacturer/device/name to google/Pixel 6/Google/oriole/oriole
   across all partition namespaces (system, system_ext, vendor, product, odm, odm_dlkm,
   vendor_dlkm, system_dlkm)
@@ -16,6 +18,7 @@ What this does:
   (Android 13 TQ3A.230901.001, build 10750268)
 - Writes results to /var/lib/waydroid/overlay_rw/{system,vendor}/... which the
   Waydroid container's overlayfs will pick up on next session start
+- Unmounts the images on exit
 
 Target device was chosen because it's a common, plausible phone on Android 13,
 and the Waydroid rootfs already has ro.build.id=TQ3A.230901.001 so no Android
@@ -27,6 +30,7 @@ signature derived from Build.BRAND/MODEL/FINGERPRINT. A stock Waydroid image
 broadcasts "waydroid" in every request, which is trivially detectable. Reporting
 as a real Pixel 6 makes the fingerprint much harder to flag.
 """
+import atexit
 import os
 import re
 import shutil
@@ -34,23 +38,24 @@ import subprocess
 import sys
 from pathlib import Path
 
-# system.img mounts at rootfs/system/ with a system/ subdir inside it;
-# vendor.img mounts at rootfs/vendor/ with files directly at that level.
-ROOTFS_SYS = Path("/var/lib/waydroid/rootfs/system")
-ROOTFS_VND = Path("/var/lib/waydroid/rootfs/vendor")
+IMAGES = Path("/var/lib/waydroid/images")
+SYSTEM_IMG = IMAGES / "system.img"
+VENDOR_IMG = IMAGES / "vendor.img"
+MNT_SYS = Path("/mnt/waydroid_masq_system")
+MNT_VND = Path("/mnt/waydroid_masq_vendor")
 OVERLAY_SYS = Path("/var/lib/waydroid/overlay_rw/system")
 OVERLAY_VND = Path("/var/lib/waydroid/overlay_rw/vendor")
 
 FILES = [
-    # (rootfs source, overlay destination relative to its overlay upperdir)
-    (ROOTFS_SYS / "system/build.prop", OVERLAY_SYS / "system/build.prop"),
-    (ROOTFS_SYS / "system/system_ext/etc/build.prop", OVERLAY_SYS / "system/system_ext/etc/build.prop"),
-    (ROOTFS_SYS / "system/product/etc/build.prop", OVERLAY_SYS / "system/product/etc/build.prop"),
-    (ROOTFS_SYS / "system/system_dlkm/etc/build.prop", OVERLAY_SYS / "system/system_dlkm/etc/build.prop"),
-    (ROOTFS_VND / "build.prop", OVERLAY_VND / "build.prop"),
-    (ROOTFS_VND / "odm/etc/build.prop", OVERLAY_VND / "odm/etc/build.prop"),
-    (ROOTFS_VND / "odm_dlkm/etc/build.prop", OVERLAY_VND / "odm_dlkm/etc/build.prop"),
-    (ROOTFS_VND / "vendor_dlkm/etc/build.prop", OVERLAY_VND / "vendor_dlkm/etc/build.prop"),
+    # (mounted-image source, overlay destination)
+    (MNT_SYS / "system/build.prop", OVERLAY_SYS / "system/build.prop"),
+    (MNT_SYS / "system/system_ext/etc/build.prop", OVERLAY_SYS / "system/system_ext/etc/build.prop"),
+    (MNT_SYS / "system/product/etc/build.prop", OVERLAY_SYS / "system/product/etc/build.prop"),
+    (MNT_SYS / "system/system_dlkm/etc/build.prop", OVERLAY_SYS / "system/system_dlkm/etc/build.prop"),
+    (MNT_VND / "build.prop", OVERLAY_VND / "build.prop"),
+    (MNT_VND / "odm/etc/build.prop", OVERLAY_VND / "odm/etc/build.prop"),
+    (MNT_VND / "odm_dlkm/etc/build.prop", OVERLAY_VND / "odm_dlkm/etc/build.prop"),
+    (MNT_VND / "vendor_dlkm/etc/build.prop", OVERLAY_VND / "vendor_dlkm/etc/build.prop"),
 ]
 
 NS = "system|system_ext|vendor|product|odm|oem|odm_dlkm|vendor_dlkm|system_dlkm"
@@ -86,6 +91,19 @@ def transform(text: str) -> str:
         text = re.sub(pat, repl, text, flags=re.MULTILINE)
     return text
 
+def _is_mounted(p: Path) -> bool:
+    return subprocess.run(["mountpoint", "-q", str(p)]).returncode == 0
+
+def _mount_ro(img: Path, mnt: Path):
+    mnt.mkdir(parents=True, exist_ok=True)
+    if _is_mounted(mnt):
+        return
+    subprocess.run(["mount", "-o", "loop,ro", str(img), str(mnt)], check=True)
+
+def _umount(mnt: Path):
+    if _is_mounted(mnt):
+        subprocess.run(["umount", str(mnt)], check=False)
+
 def main():
     if os.geteuid() != 0:
         print("must run as root (sudo)", file=sys.stderr)
@@ -96,6 +114,11 @@ def main():
         print("Waydroid session must be STOPPED before running this.", file=sys.stderr)
         print("Run: sudo waydroid session stop", file=sys.stderr)
         sys.exit(1)
+
+    _mount_ro(SYSTEM_IMG, MNT_SYS)
+    atexit.register(_umount, MNT_SYS)
+    _mount_ro(VENDOR_IMG, MNT_VND)
+    atexit.register(_umount, MNT_VND)
 
     for src, dst in FILES:
         if not src.exists():

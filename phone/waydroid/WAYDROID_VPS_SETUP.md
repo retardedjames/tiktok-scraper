@@ -260,6 +260,14 @@ already handles this dual-window case.
 **Waydroid container won't start:** `sudo modprobe binder_linux` then
 `sudo bash /usr/local/bin/waydroid-start.sh`.
 
+**Masquerade prints "SKIP (missing)" for every build.prop:** `masquerade_buildprop.py`
+needs to read the images it's patching, but img-based Waydroid only mounts
+`/var/lib/waydroid/rootfs/` while a session is **running**. The script therefore
+loop-mounts `system.img` and `vendor.img` read-only at `/mnt/waydroid_masq_*`
+itself and reads from there. If you see "SKIP (missing)" after the fix, check
+that `/var/lib/waydroid/images/{system,vendor}.img` exist and are ext4
+(`head -c 2048 … | od -An -c` should show magic `S \357` at offset 0x438).
+
 **ADB can't connect:** check socat proxy is up (`ss -tlnp | grep 5556`);
 `waydroid-start.sh` creates it automatically. If the proxy is up but ADB
 still shows `offline`, the `/data/misc/adb/adb_keys` file was likely written

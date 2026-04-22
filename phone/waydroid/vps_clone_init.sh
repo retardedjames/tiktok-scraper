@@ -121,8 +121,11 @@ MASQ="$SELF_DIR/masquerade_buildprop.py"
 sudo waydroid session stop
 sudo python3 "$MASQ"
 ok "Build props patched — restarting Waydroid"
-sudo bash /usr/local/bin/waydroid-start.sh > /tmp/waydroid_session.log 2>&1 &
-sleep 30
+# waydroid-start.sh writes /tmp/waydroid_session.log itself (as root, owned 0644).
+# Don't re-redirect to that path from this (user) shell — it fails with
+# "Permission denied" when the file already exists from step 6. waydroid-start.sh
+# also internally waits for sys.boot_completed, so we don't need a separate sleep.
+sudo bash /usr/local/bin/waydroid-start.sh
 BRAND=$(sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- getprop ro.product.brand 2>/dev/null)
 MODEL=$(sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- getprop ro.product.model 2>/dev/null)
 ok "Device reports: brand=$BRAND model=$MODEL"
