@@ -68,19 +68,22 @@ clutter.
 ```bash
 ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP>
 
-# Sparse clone — downloads tree metadata but only materializes phone/waydroid/
+# Sparse clone — blob:none skips file downloads until checkout,
+# --no-cone + the two patterns check out ONLY phone/waydroid/**.
 cd ~
-git clone --filter=blob:none --sparse https://github.com/retardedjames/tiktok-scraper.git
+git clone --filter=blob:none --no-checkout https://github.com/retardedjames/tiktok-scraper.git
 cd tiktok-scraper
-git sparse-checkout set phone/waydroid
+git sparse-checkout set --no-cone '/phone/waydroid/*' '/phone/waydroid/patched/*'
+git checkout main
 
 # Run the one-time init
 bash phone/waydroid/vps_clone_init.sh
 ```
 
-After that, `phone/waydroid/run.sh` does `git fetch && git reset --hard
-origin/main` on each start, and sparse-checkout keeps that update confined to
-`phone/waydroid/` — no other files appear.
+Working tree after checkout contains only `phone/waydroid/` — no root-level
+scripts, no `phone/*.py` clutter. `phone/waydroid/run.sh` does
+`git fetch && git reset --hard origin/main` on each start, and sparse-checkout
+keeps the working tree confined to `phone/waydroid/`.
 
 This script does in one pass:
 
