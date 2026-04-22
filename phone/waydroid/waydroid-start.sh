@@ -105,16 +105,15 @@ chmod +x /usr/local/bin/adb-waydroid-proxy.sh
 socat TCP-LISTEN:5556,fork,bind=0.0.0.0 EXEC:/usr/local/bin/adb-waydroid-proxy.sh \
     > /tmp/socat_adb.log 2>&1 &
 
-echo "[*] Ensuring mitmproxy CA cert is on /sdcard..."
+echo "[*] Ensuring mitmproxy CA cert is in container..."
 HOST_CERT=/home/$WAYDROID_USER/.mitmproxy/mitmproxy-ca-cert.pem
 if [ ! -f "$HOST_CERT" ]; then
     echo "[!] Host cert missing at $HOST_CERT — run 'mitmdump --listen-port 18888 &; sleep 4; kill %1' as $WAYDROID_USER to generate."
     exit 1
 fi
 sudo -u $WAYDROID_USER adb connect 127.0.0.1:5556 >/dev/null 2>&1
-# Wait for Android userspace boot before touching /sdcard — adbd comes up on 5555
-# before vold has FUSE-mounted /sdcard, so an early push fails with
-# "remote couldn't create file: No such file or directory".
+# Wait for Android userspace to boot — adbd comes up on 5555 before vold/storage
+# is ready and before shell permissions are fully applied.
 echo "[*] Waiting for sys.boot_completed (up to 3 min)..."
 for i in $(seq 1 60); do
     BC=$(sudo -u $WAYDROID_USER adb -s 127.0.0.1:5556 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r\n')
@@ -124,10 +123,10 @@ done
 if [ "$BC" != "1" ]; then
     echo "[!] Android did not finish booting in 3 min"; exit 1
 fi
-if ! sudo -u $WAYDROID_USER adb -s 127.0.0.1:5556 shell 'ls /sdcard/mitmproxy-ca.pem' 2>/dev/null | grep -q mitmproxy-ca; then
-    echo "[*] Pushing host cert to /sdcard/mitmproxy-ca.pem..."
-    sudo -u $WAYDROID_USER adb -s 127.0.0.1:5556 push "$HOST_CERT" /sdcard/mitmproxy-ca.pem
-fi
+# Push to /data/local/tmp/ — /sdcard adb-writes fail with "Operation not permitted"
+# on LineageOS-GAPPS because the shell user has no MANAGE_EXTERNAL_STORAGE.
+echo "[*] Pushing host cert to /data/local/tmp/mitmproxy-ca.pem..."
+sudo -u $WAYDROID_USER adb -s 127.0.0.1:5556 push "$HOST_CERT" /data/local/tmp/mitmproxy-ca.pem
 
 echo "[*] Installing mitmproxy CA cert..."
 # umount first so a re-run of this script always gets a fresh bind-mount with the
@@ -137,7 +136,7 @@ lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c '
   umount /system/etc/security/cacerts 2>/dev/null || true
   mkdir -p /tmp/cacerts
   cp /system/etc/security/cacerts/* /tmp/cacerts/
-  cp /sdcard/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0
+  cp /data/local/tmp/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0
   chmod 644 /tmp/cacerts/c8750f0d.0
   mount --bind /tmp/cacerts /system/etc/security/cacerts
   echo cert_mounted

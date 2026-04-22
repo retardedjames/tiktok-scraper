@@ -132,11 +132,11 @@ sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c '
     umount /system/etc/security/cacerts 2>/dev/null || true
     mkdir -p /tmp/cacerts
     cp /system/etc/security/cacerts/* /tmp/cacerts/
-    cp /sdcard/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0
+    cp /data/local/tmp/mitmproxy-ca.pem /tmp/cacerts/c8750f0d.0
     chmod 644 /tmp/cacerts/c8750f0d.0
     mount --bind /tmp/cacerts /system/etc/security/cacerts
     echo cert_mounted
-' && ok "CA cert mounted" || warn "CA cert mount failed — check /sdcard/mitmproxy-ca.pem"
+' && ok "CA cert mounted" || warn "CA cert mount failed — check /data/local/tmp/mitmproxy-ca.pem"
 
 # ── 12. Randomize android_id ──────────────────────────────────────────────────
 hdr "Randomize android_id"

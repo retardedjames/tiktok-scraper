@@ -155,6 +155,8 @@ python3 queue.py stats
 
 **"No internet" in TikTok:** cert not mounted — re-run cert bind-mount from
 `vps_clone_init.sh` step 11 (or `sudo bash /usr/local/bin/waydroid-start.sh`).
+The cert lives at `/data/local/tmp/mitmproxy-ca.pem` inside the container
+(not `/sdcard/` — adb shell can't write there on LineageOS-GAPPS).
 
 **0 saves every term:** TikTok anti-abuse flagged this device+account.
 Clear app data, restart, log in with a different account.
