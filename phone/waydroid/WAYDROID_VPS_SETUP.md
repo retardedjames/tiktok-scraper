@@ -71,6 +71,10 @@ clutter.
 ```bash
 ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_VM_IP>
 
+# Wipe any stale ~/tiktok-scraper left by an earlier attempt or by the
+# base snapshot — git clone refuses to write into a non-empty directory.
+rm -rf ~/tiktok-scraper
+
 # Sparse clone — blob:none skips file downloads until checkout,
 # --no-cone + the two patterns check out ONLY phone/waydroid/**.
 cd ~
