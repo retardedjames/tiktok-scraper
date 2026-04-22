@@ -1,0 +1,496 @@
+#!/usr/bin/env python3
+"""
+TikTok Lite scraper for Waydroid running on a VPS (ADB over TCP → 127.0.0.1:5556).
+
+Usage:
+  python3 mobile_scrape.py <keyword> [--scrolls N] [--batch N] [--out file.json]
+
+Adapted from phone/mobile_scrape.py with these Waydroid-specific differences:
+  - ADB_DEVICE defaults to 127.0.0.1:5556 (socat proxy → Waydroid container).
+  - `_foreground_app` handles Waydroid's dual-display focus: `dumpsys window`
+    emits one `mCurrentFocus` per display, so if any is TikTok we report TikTok.
+  - Everything else (coords.py auto-scaling, .env loading, calibrate.py,
+    search_and_sort with Videos-tab-first, scroll_smart) is identical to phone/.
+"""
+
+import sys
+import os
+import json
+import time
+import socket
+import subprocess
+import argparse
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DUMP_SCRIPT = os.path.join(SCRIPT_DIR, "tt_dump.py")
+
+# Waydroid default: socat proxy on the host side of the container
+_ADB_DEVICE = os.environ.get("ADB_DEVICE", "127.0.0.1:5556")
+
+import coords as coords_mod
+
+_COORDS: coords_mod.Coords | None = None
+
+
+def safe_keyword(k: str) -> str:
+    """Slash-safe keyword for filesystem paths. Must match tt_dump.safe_keyword."""
+    return k.replace("/", "_").replace("\\", "_")
+
+
+def _adb_base() -> list:
+    return ["adb", "-s", _ADB_DEVICE] if _ADB_DEVICE else ["adb"]
+
+
+def adb(cmd, check=False):
+    return subprocess.run(_adb_base() + cmd.split(), capture_output=True, check=check)
+
+
+def adb_tap(x, y):
+    adb(f"shell input tap {x} {y}")
+    time.sleep(0.4)
+
+
+_DEBUG_SCREENSHOTS = False
+
+
+def screenshot(tag: str):
+    if not _DEBUG_SCREENSHOTS:
+        return
+    path = f"/tmp/screen_{tag}.png"
+    result = subprocess.run(_adb_base() + ["exec-out", "screencap", "-p"], capture_output=True)
+    with open(path, "wb") as f:
+        f.write(result.stdout)
+    print(f"[dbg] screenshot → {path}")
+
+
+def _foreground_app() -> str:
+    """Return the package of the current focused window.
+
+    Waydroid emits multiple mCurrentFocus lines (one per display/namespace) —
+    the launcher3 window stays focused on the built-in display while TikTok is
+    focused on the Waydroid display. If any focused window is TikTok, report
+    TikTok; otherwise return the first focus.
+    """
+    r = subprocess.run(_adb_base() + ["shell", "dumpsys", "window"], capture_output=True)
+    out = r.stdout.decode() if r.stdout else ""
+    focused = []
+    for line in out.splitlines():
+        if "mCurrentFocus" in line and "/" in line:
+            try:
+                pkg = line.split("/")[0].split()[-1]
+                if "{" in pkg:
+                    pkg = pkg.split("{")[-1]
+                focused.append(pkg)
+            except Exception:
+                pass
+    for p in focused:
+        if "tiktok" in p:
+            return p
+    return focused[0] if focused else ""
+
+
+def _foreground_activity() -> str:
+    """Return the activity class of the currently focused window. Prefers a
+    TikTok focus over other displays (Waydroid dual-focus)."""
+    r = subprocess.run(_adb_base() + ["shell", "dumpsys", "window"], capture_output=True)
+    out = r.stdout.decode() if r.stdout else ""
+    lines = []
+    for line in out.splitlines():
+        if "mCurrentFocus" in line and "/" in line:
+            try:
+                act = line.split("/", 1)[1].rstrip("} \n")
+                pkg = line.split("/")[0].split()[-1]
+                if "{" in pkg:
+                    pkg = pkg.split("{")[-1]
+                lines.append((pkg, act))
+            except Exception:
+                pass
+    for pkg, act in lines:
+        if "tiktok" in pkg:
+            return act
+    return lines[0][1] if lines else ""
+
+
+def _screen_is_mostly_white(threshold: float = 0.50) -> bool:
+    """Return True if >threshold of sampled screen pixels are near-white (search page heuristic)."""
+    try:
+        import io
+        raw = subprocess.run(
+            _adb_base() + ["exec-out", "screencap", "-p"],
+            capture_output=True, timeout=15,
+        ).stdout
+        if len(raw) < 1000:
+            return False
+        from PIL import Image
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        w, h = img.size
+        pts = [(x, y) for x in range(40, w, 60) for y in range(120, h - 120, 60)]
+        white = sum(1 for x, y in pts if all(c > 210 for c in img.getpixel((x, y))))
+        ratio = white / max(len(pts), 1)
+        print(f"[dbg] white-pixel ratio: {ratio:.2f} ({white}/{len(pts)})")
+        return ratio >= threshold
+    except ImportError:
+        return False
+    except Exception as e:
+        print(f"[dbg] white check error: {e}")
+        return False
+
+
+def ensure_coords():
+    global _COORDS
+    if _COORDS is None:
+        _COORDS = coords_mod.load(_adb_base())
+        print(f"[*] Coords: {_COORDS.source}")
+    return _COORDS
+
+
+def start_mitmproxy():
+    if not os.path.exists(DUMP_SCRIPT):
+        raise RuntimeError(f"mitmproxy addon missing: {DUMP_SCRIPT}")
+    subprocess.run("fuser -k 8080/tcp 2>/dev/null || true", shell=True)
+    time.sleep(0.3)
+    proc = subprocess.Popen(
+        [sys.executable, os.path.expanduser("~/.local/bin/mitmdump"),
+         "--listen-host", "127.0.0.1", "--listen-port", "8080",
+         "-s", DUMP_SCRIPT,
+         "-w", "/tmp/flows.mitm"],
+        stdout=open("/tmp/mitmdump.log", "w"), stderr=subprocess.STDOUT,
+    )
+    opened = False
+    for _ in range(30):
+        try:
+            socket.create_connection(("127.0.0.1", 8080), timeout=0.5).close()
+            opened = True
+            break
+        except OSError:
+            time.sleep(0.2)
+    if opened:
+        print("[*] mitmproxy: port 8080 open OK")
+    else:
+        print("[!] mitmproxy: port 8080 never opened — mitmdump may have crashed")
+    return proc
+
+
+def set_proxy():
+    r1 = adb("reverse tcp:8080 tcp:8080")
+    r2 = adb("shell settings put global http_proxy 127.0.0.1:8080")
+    check = adb("shell settings get global http_proxy")
+    proxy_val = check.stdout.decode().strip() if check.stdout else "?"
+    print(f"[*] Proxy set: {proxy_val} (reverse exit={r1.returncode}, set exit={r2.returncode})")
+
+
+def clear_proxy():
+    adb("shell settings put global http_proxy :0")
+    adb("shell settings delete global http_proxy")
+
+
+def launch_tiktok():
+    adb("shell am force-stop com.tiktok.lite.go")
+    time.sleep(0.8)
+    r = adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
+    out = r.stdout.decode().strip() if r.stdout else ""
+    print(f"[*] TikTok launch: exit={r.returncode} {out[:80]}")
+    time.sleep(6.0)
+    screenshot("01_after_launch")
+    fg = _foreground_app()
+    print(f"[*] Foreground app: {fg}")
+    if "tiktok" not in fg:
+        print("[!] TikTok not in foreground after launch — retrying...")
+        adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
+        time.sleep(8.0)
+        screenshot("03_after_launch_retry")
+        fg = _foreground_app()
+        print(f"[*] Foreground app after retry: {fg}")
+
+
+def _ensure_tiktok_foreground():
+    fg = _foreground_app()
+    if "tiktok" not in fg:
+        print(f"[!] TikTok not in foreground (got: {fg}) — re-launching...")
+        adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
+        time.sleep(8.0)
+        fg = _foreground_app()
+        print(f"[*] Foreground after re-launch: {fg}")
+
+
+def browse_fyp():
+    """Short idle between terms so the app doesn't look like a bot."""
+    time.sleep(8)
+
+
+def search_and_sort(keyword: str, videos_tab_first: bool = True):
+    c = ensure_coords()
+    tag = safe_keyword(keyword).replace(" ", "_")[:20]
+
+    fg_act = _foreground_activity()
+    if "MainActivity" not in fg_act:
+        print(f"[!] Not on FYP (foreground={fg_act!r}) — relaunching")
+        launch_tiktok()
+
+    screenshot(f"{tag}_A_before_search_tap")
+
+    for attempt in range(3):
+        print(f"[*] Tapping search icon (attempt {attempt + 1})...")
+        adb_tap(*c.SEARCH_ICON)
+        time.sleep(2.0)
+        screenshot(f"{tag}_B_after_search_tap")
+        fg_act = _foreground_activity()
+        on_search = "FeedSearch" in fg_act or "Search" in fg_act
+        if not on_search:
+            on_search = _screen_is_mostly_white()
+            if on_search:
+                print(f"[*] Search page confirmed via screenshot (activity={fg_act!r})")
+        if on_search:
+            break
+        print(f"[!] Not on search page (activity={fg_act!r}) — force-stopping TikTok and retrying")
+        adb("shell am force-stop com.tiktok.lite.go")
+        time.sleep(1.5)
+        adb("shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity")
+        time.sleep(7.0)
+        fg_act = _foreground_activity()
+        print(f"[*] Foreground after relaunch: {fg_act!r}")
+    else:
+        raise RuntimeError(f"Search page not reached after 3 attempts — last activity: {fg_act!r}")
+
+    adb_tap(*c.SEARCH_FIELD)
+    time.sleep(0.15)
+    adb_tap(*c.SEARCH_CLEAR_BTN)
+    time.sleep(0.15)
+    adb_tap(*c.SEARCH_FIELD)
+    time.sleep(0.15)
+
+    print(f"[*] Typing '{keyword}'...")
+    for ch in keyword:
+        if ch == ' ':
+            subprocess.run(_adb_base() + ["shell", "input", "keyevent", "KEYCODE_SPACE"], capture_output=True)
+        else:
+            subprocess.run(_adb_base() + ["shell", "input", "text", ch], capture_output=True)
+        time.sleep(0.15)
+    time.sleep(0.4)
+    screenshot(f"{tag}_C_after_typing")
+
+    adb_tap(*c.SEARCH_BTN)
+    time.sleep(4.0)
+    screenshot(f"{tag}_D_after_search_btn")
+
+    if videos_tab_first:
+        print("[*] Tapping 'Videos' tab before applying filter...")
+        adb_tap(*c.VIDEOS_TAB)
+        time.sleep(2.5)
+        screenshot(f"{tag}_D2_after_videos_tab")
+
+    print("[*] Opening filter popup...")
+    adb_tap(*c.FILTER_ICON)
+    time.sleep(1.5)
+    screenshot(f"{tag}_E_filter_popup")
+
+    print("[*] Selecting 'Like count' sort...")
+    adb_tap(*c.LIKE_COUNT_BTN)
+    time.sleep(0.4)
+
+    print("[*] Applying filter...")
+    adb_tap(*c.APPLY_BTN)
+    time.sleep(4.0)
+    screenshot(f"{tag}_F_after_apply")
+
+
+def _swipe_up_once():
+    c = ensure_coords()
+    sx, sy_start = c.SWIPE_START_Y
+    ex, sy_end = c.SWIPE_END_Y
+    adb(f"shell input swipe {sx} {sy_start} {ex} {sy_end} 500")
+
+
+def scroll_results(scrolls: int):
+    print(f"[*] Scrolling {scrolls} times...")
+    for i in range(scrolls):
+        _swipe_up_once()
+        time.sleep(1.2)
+        print(f"    scroll {i+1}/{scrolls}")
+
+
+def _jsonl_line_count(fname: str) -> int:
+    if not os.path.exists(fname):
+        return 0
+    with open(fname) as f:
+        return sum(1 for _ in f)
+
+
+def scroll_smart(keyword: str, sort_type: str = "1", batch: int = 5,
+                 max_scrolls: int = 33, min_likes: int = 1000) -> int:
+    """
+    Scroll up to `max_scrolls`, stopping early if TikTok stops loading or if
+    a whole batch produces no videos with digg_count > min_likes.
+    """
+    fname = f"/tmp/tt_{safe_keyword(keyword)}_{sort_type}.jsonl"
+    total = 0
+
+    while True:
+        prev_count = _jsonl_line_count(fname)
+        this_batch = min(batch, max_scrolls - total)
+        for _ in range(this_batch):
+            _swipe_up_once()
+            time.sleep(1.2)
+        total += this_batch
+
+        new_count = _jsonl_line_count(fname)
+        if new_count - prev_count == 0:
+            print(f"[*] No new content after {total} scrolls — TikTok limit reached.")
+            print(f"[dbg] JSONL file: {fname} exists={os.path.exists(fname)} lines={new_count}")
+            print(f"[dbg] mitmdump log tail:")
+            try:
+                with open("/tmp/mitmdump.log") as _f:
+                    for _l in _f.readlines()[-10:]:
+                        print(f"       {_l.rstrip()}")
+            except Exception as _e:
+                print(f"       (could not read: {_e})")
+            break
+
+        batch_max_likes = 0
+        with open(fname) as _f:
+            for i, line in enumerate(_f):
+                if i < prev_count:
+                    continue
+                try:
+                    v = json.loads(line)
+                    likes = (v.get("statistics") or {}).get("digg_count", 0) or 0
+                    if likes > batch_max_likes:
+                        batch_max_likes = likes
+                except Exception:
+                    pass
+
+        print(f"[*] {total} scrolls — {new_count} lines captured "
+              f"(batch max likes: {batch_max_likes})")
+
+        if batch_max_likes <= min_likes:
+            print(f"[*] No videos with >{min_likes} likes in latest batch — stopping.")
+            break
+
+        if total >= max_scrolls:
+            print(f"[*] Reached max {max_scrolls} scrolls.")
+            break
+
+    return total
+
+
+def load_results(keyword: str, sort_type: str = "1") -> list[dict]:
+    fname = f"/tmp/tt_{safe_keyword(keyword)}_{sort_type}.jsonl"
+    if not os.path.exists(fname):
+        return []
+    seen = set()
+    results = []
+    with open(fname) as f:
+        for line in f:
+            try:
+                v = json.loads(line)
+                aweme_id = v.get("aweme_id", "")
+                if aweme_id and aweme_id not in seen:
+                    seen.add(aweme_id)
+                    results.append(v)
+            except Exception:
+                pass
+    results.sort(key=lambda v: (v.get("statistics") or {}).get("digg_count", 0), reverse=True)
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(description="TikTok Lite Waydroid scraper")
+    parser.add_argument("phrase", help="Search phrase")
+    parser.add_argument("--count", type=int, default=50,
+                        help="Max videos to show in terminal output")
+    parser.add_argument("--scrolls", type=int, default=None,
+                        help="Fixed scroll count (default: auto-scroll to max_scrolls)")
+    parser.add_argument("--batch", type=int, default=5,
+                        help="Scrolls per batch when auto-scrolling")
+    parser.add_argument("--out", default=None)
+    parser.add_argument("--no-db", action="store_true", help="Skip saving to database")
+    parser.add_argument("--no-videos-tab-first", dest="videos_tab_first",
+                        action="store_false",
+                        help="Skip the Videos-tab tap; use the old Top-tab filter flow")
+    parser.set_defaults(videos_tab_first=True)
+    parser.add_argument("--debug", action="store_true", help="Save screenshots at each UI step")
+    args = parser.parse_args()
+
+    global _DEBUG_SCREENSHOTS
+    if args.debug:
+        _DEBUG_SCREENSHOTS = True
+
+    import preflight
+    if not preflight.run_all():
+        sys.exit(1)
+
+    keyword = args.phrase
+
+    for sort_type in ["1", "rel"]:
+        fname = f"/tmp/tt_{safe_keyword(keyword)}_{sort_type}.jsonl"
+        if os.path.exists(fname):
+            os.remove(fname)
+
+    print("[*] Starting mitmproxy...")
+    mp = start_mitmproxy()
+    set_proxy()
+
+    try:
+        print("[*] Launching TikTok Lite...")
+        launch_tiktok()
+        search_and_sort(keyword, videos_tab_first=args.videos_tab_first)
+        if args.scrolls is not None:
+            scroll_results(args.scrolls)
+        else:
+            scroll_smart(keyword, batch=args.batch)
+    finally:
+        clear_proxy()
+        mp.terminate()
+        time.sleep(0.5)
+
+    raw_videos = load_results(keyword)
+    if not raw_videos:
+        print("No videos captured. The app may not have sent traffic through the proxy.")
+        return
+
+    total = len(raw_videos)
+    raw_videos = [v for v in raw_videos
+                  if (v.get("statistics") or {}).get("digg_count", 0) >= 1000]
+    print(f"[*] {total} captured, {total - len(raw_videos)} under 1k dropped, "
+          f"{len(raw_videos)} to save.")
+
+    if not args.no_db and raw_videos:
+        sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
+        from db import save_search
+        print(f"[*] Saving {len(raw_videos)} videos to database...")
+        saved = save_search(keyword, "1", raw_videos)
+        print(f"[*] Saved {saved} unique videos to DB.")
+
+    display = raw_videos[:args.count]
+    if args.out:
+        out_list = []
+        for v in display:
+            stats = v.get("statistics") or {}
+            author = v.get("author") or {}
+            uname = author.get("unique_id", "")
+            vid = v.get("aweme_id", "")
+            out_list.append({
+                "id": vid, "author": uname,
+                "description": v.get("desc", ""),
+                "likes": stats.get("digg_count", 0),
+                "views": stats.get("play_count", 0),
+                "url": f"https://www.tiktok.com/@{uname}/video/{vid}",
+            })
+        with open(args.out, "w") as f:
+            json.dump(out_list, f, indent=2, ensure_ascii=False)
+        print(f"Saved {len(out_list)} videos to {args.out}")
+    else:
+        print(f"\nTop {len(display)} videos for '{keyword}' (sorted by likes):\n")
+        for i, v in enumerate(display, 1):
+            stats = v.get("statistics") or {}
+            author = v.get("author") or {}
+            uname = author.get("unique_id", "")
+            vid = v.get("aweme_id", "")
+            likes = stats.get("digg_count", 0)
+            print(f"{i:3}. {likes:>10,} likes  @{uname}")
+            print(f"      {v.get('desc', '')[:75]}")
+            print(f"      https://www.tiktok.com/@{uname}/video/{vid}\n")
+
+
+if __name__ == "__main__":
+    main()
