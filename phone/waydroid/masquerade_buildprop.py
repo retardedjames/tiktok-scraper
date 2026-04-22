@@ -34,20 +34,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOTFS = Path("/var/lib/waydroid/rootfs")
+# system.img mounts at rootfs/system/ with a system/ subdir inside it;
+# vendor.img mounts at rootfs/vendor/ with files directly at that level.
+ROOTFS_SYS = Path("/var/lib/waydroid/rootfs/system")
+ROOTFS_VND = Path("/var/lib/waydroid/rootfs/vendor")
 OVERLAY_SYS = Path("/var/lib/waydroid/overlay_rw/system")
 OVERLAY_VND = Path("/var/lib/waydroid/overlay_rw/vendor")
 
 FILES = [
     # (rootfs source, overlay destination relative to its overlay upperdir)
-    (ROOTFS / "system/build.prop", OVERLAY_SYS / "system/build.prop"),
-    (ROOTFS / "system/system_ext/etc/build.prop", OVERLAY_SYS / "system/system_ext/etc/build.prop"),
-    (ROOTFS / "system/product/etc/build.prop", OVERLAY_SYS / "system/product/etc/build.prop"),
-    (ROOTFS / "system/system_dlkm/etc/build.prop", OVERLAY_SYS / "system/system_dlkm/etc/build.prop"),
-    (ROOTFS / "vendor/build.prop", OVERLAY_VND / "build.prop"),
-    (ROOTFS / "vendor/odm/etc/build.prop", OVERLAY_VND / "odm/etc/build.prop"),
-    (ROOTFS / "vendor/odm_dlkm/etc/build.prop", OVERLAY_VND / "odm_dlkm/etc/build.prop"),
-    (ROOTFS / "vendor/vendor_dlkm/etc/build.prop", OVERLAY_VND / "vendor_dlkm/etc/build.prop"),
+    (ROOTFS_SYS / "system/build.prop", OVERLAY_SYS / "system/build.prop"),
+    (ROOTFS_SYS / "system/system_ext/etc/build.prop", OVERLAY_SYS / "system/system_ext/etc/build.prop"),
+    (ROOTFS_SYS / "system/product/etc/build.prop", OVERLAY_SYS / "system/product/etc/build.prop"),
+    (ROOTFS_SYS / "system/system_dlkm/etc/build.prop", OVERLAY_SYS / "system/system_dlkm/etc/build.prop"),
+    (ROOTFS_VND / "build.prop", OVERLAY_VND / "build.prop"),
+    (ROOTFS_VND / "odm/etc/build.prop", OVERLAY_VND / "odm/etc/build.prop"),
+    (ROOTFS_VND / "odm_dlkm/etc/build.prop", OVERLAY_VND / "odm_dlkm/etc/build.prop"),
+    (ROOTFS_VND / "vendor_dlkm/etc/build.prop", OVERLAY_VND / "vendor_dlkm/etc/build.prop"),
 ]
 
 NS = "system|system_ext|vendor|product|odm|oem|odm_dlkm|vendor_dlkm|system_dlkm"
