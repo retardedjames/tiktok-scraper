@@ -49,7 +49,32 @@ separate masquerade-depth problem — see the LEAK section of
 Assumes SSH works and you have the clone's external IP. Substitute
 `<NEW_IP>` below.
 
-### 1. Pre-boot: rotate the container eth0 MAC
+### 1. Pre-boot: add swap
+
+The default GCP clone has **3.8 GiB RAM and no swap**. Waydroid + TikTok Lite
++ mitmdump (with an ever-growing `-w /tmp/flows.mitm`) routinely pushes free
+memory under 200 MiB after a few hours; when it spikes, the kernel silently
+kills the Android LXC container. The scraper then fails every term with
+`Search page not reached — last activity: ''` because ADB has gone offline.
+2 GiB swap on disk is enough to absorb the spikes.
+
+```bash
+ssh -i ~/.ssh/jamescvermont jamescvermont@<NEW_IP>
+
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab
+
+swapon --show   # confirm /swapfile present, 2G
+free -h         # Swap row should show 2.0Gi
+```
+
+The 14 GiB root disk sits at ~65% before adding swap; 2 GiB pushes it to
+~80%. Don't go bigger unless you also grow the disk.
+
+### 2. Pre-boot: rotate the container eth0 MAC
 
 The MAC is baked in the LXC config on the host filesystem. Must be changed
 **before** Waydroid starts so the first boot uses the new value.
@@ -72,7 +97,7 @@ echo "new container MAC = $NEW_MAC"
 Keep the `00:16:3e` OUI — that's the LXC default, changing it would itself
 be fingerprintable. Rotate only the last 3 bytes.
 
-### 2. Start the Waydroid stack
+### 3. Start the Waydroid stack
 
 ```bash
 sudo bash /usr/local/bin/waydroid-start.sh
@@ -86,7 +111,7 @@ adb -s 127.0.0.1:5556 shell getprop sys.boot_completed   # → 1
 adb -s 127.0.0.1:5556 shell cat /sys/class/net/eth0/address  # → your new MAC
 ```
 
-### 3. Rotate Android-side per-clone identifiers
+### 4. Rotate Android-side per-clone identifiers
 
 ```bash
 ADB="adb -s 127.0.0.1:5556"
@@ -112,7 +137,7 @@ $ADB shell setprop persist.radio.imei "$NEW_IMEI"
 echo "persist.radio.imei = $NEW_IMEI"
 ```
 
-### 4. Wipe TikTok app data (removes install ID + logged-in account)
+### 5. Wipe TikTok app data (removes install ID + logged-in account)
 
 ```bash
 $ADB shell am force-stop com.tiktok.lite.go
@@ -124,7 +149,7 @@ it, the clone opens TikTok already signed in as the source's account — the
 two VPSes would then be posting requests from the same user ID, which is a
 cluster signal on top of the device-level ones.
 
-### 5. Refresh `.env` `VM_NAME`
+### 6. Refresh `.env` `VM_NAME`
 
 The `.env` in `phone/waydroid/` is gitignored, so the clone inherits the
 source's copy verbatim — including `VM_NAME`. Point it at the new IP so ntfy
@@ -140,7 +165,7 @@ sed -i "s/^VM_NAME=.*/VM_NAME=vps-$EXT_IP/" .env
 grep VM_NAME .env
 ```
 
-### 6. Clear the inherited `http_proxy` setting
+### 7. Clear the inherited `http_proxy` setting
 
 The source VPS is actively scraping, so `Settings.Global.http_proxy` is set
 to `127.0.0.1:8080` (pointing at its mitmdump). The clone inherits that
@@ -158,7 +183,7 @@ $ADB shell settings delete global http_proxy
 $ADB shell settings get global http_proxy    # should print: null
 ```
 
-### 7. Launch TikTok and log in with a FRESH account
+### 8. Launch TikTok and log in with a FRESH account
 
 ```bash
 $ADB shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity
@@ -169,7 +194,7 @@ has never been used on another VPS. Reusing an account across clones
 re-links them at the account layer even if every device identifier is now
 unique.
 
-### 8. Verify the clone diverges from the source
+### 9. Verify the clone diverges from the source
 
 Before starting the scraper, dump the fingerprint and diff against the source:
 
@@ -191,7 +216,7 @@ still matches is something this procedure missed — fix before scraping.
 Expected matches (fleet-wide, intentional): the masquerade section (Pixel 6
 props) and most of the LEAK section (Waydroid tells, x86 cpuinfo, etc.).
 
-### 9. Start the scraper
+### 10. Start the scraper
 
 ```bash
 cd ~/tiktok-scraper/phone/waydroid
@@ -222,6 +247,17 @@ points at a mitmdump that only runs on the source. Run step 6's three adb
 commands, then relaunch TikTok (`am force-stop` + `am start`). The clone
 can reach the internet — only HTTPS is broken, because the system-wide
 proxy swallows it.
+
+**Scraper fails every term with `Search page not reached — last activity:
+''` and VNC shows a black screen:** the Waydroid LXC container got OOM-killed.
+`sudo lxc-ls --lxcpath=/var/lib/waydroid/lxc -f` will show `waydroid STOPPED`
+while sway+wayvnc are still up (hence VNC connects but has nothing to show).
+If you didn't complete step 1, add swap now:
+`sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap
+/swapfile && sudo swapon /swapfile && echo "/swapfile none swap sw 0 0" |
+sudo tee -a /etc/fstab`. Then restart the stack: `sudo bash
+/usr/local/bin/waydroid-start.sh`, kill the stuck `scrape_forever.py`, and
+relaunch via `run.sh`.
 
 **Host `/etc/hostname` still shows the source's hostname:** cosmetic,
 doesn't affect TikTok. Change via `sudo hostnamectl set-hostname <new>` if
