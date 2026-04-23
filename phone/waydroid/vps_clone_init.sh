@@ -120,13 +120,16 @@ else
 fi
 
 # ── 11. Masquerade as Pixel 6 ─────────────────────────────────────────────────
-# Idempotent: if the overlay build.prop already reports Pixel 6 we skip the
-# re-run (saves a session-stop/start cycle on snapshot clones).
+# Idempotent: if the overlay build.prop already reports Pixel 6 AND the
+# arm64-v8a CPU ABI rewrite is in place, we skip the re-run. Both must
+# match — otherwise an old snapshot baked before the ABI fix (commit
+# 07cd0b2, 2026-04-22) would wrongly skip and ship with host_abi=x86_64.
 hdr "Pixel 6 masquerade"
 MASQ="$SELF_DIR/masquerade_buildprop.py"
 OVERLAY_BP=/var/lib/waydroid/overlay_rw/system/system/build.prop
-if sudo grep -q '^ro\.product\.system\.model=Pixel 6$' "$OVERLAY_BP" 2>/dev/null; then
-    ok "build.prop overlay already reports Pixel 6 — skipping"
+if sudo grep -q '^ro\.product\.system\.model=Pixel 6$' "$OVERLAY_BP" 2>/dev/null \
+   && sudo grep -q '^ro\.product\.cpu\.abi=arm64-v8a$' "$OVERLAY_BP" 2>/dev/null; then
+    ok "build.prop overlay already reports Pixel 6 + arm64-v8a — skipping"
 else
     sudo waydroid session stop
     sudo python3 "$MASQ"
