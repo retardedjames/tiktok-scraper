@@ -89,7 +89,7 @@ done
 lxc_sh() {
     local script="$1"
     for _ in $(seq 1 30); do
-        if lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c "$script"; then
+        if lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- /system/bin/sh -c "$script"; then
             return 0
         fi
         sleep 3
