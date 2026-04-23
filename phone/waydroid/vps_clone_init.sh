@@ -70,6 +70,21 @@ sudo cp "$SELF_DIR/waydroid-start.sh" /usr/local/bin/waydroid-start.sh
 sudo chmod +x /usr/local/bin/waydroid-start.sh
 ok "waydroid-start.sh installed"
 
+# ── 5b. Randomize container eth0 MAC ──────────────────────────────────────────
+# The MAC is set by lxc.net.0.hwaddr in /var/lib/waydroid/lxc/waydroid/config,
+# which is baked into the snapshot — every clone would otherwise share the same
+# 00:16:3e:f9:d3:03. Apps (TikTok included) read NetworkInterface.getHardwareAddress()
+# so this is a strong cross-VM linker. Keep the 00:16:3e OUI (LXC default — changing
+# it would itself be fingerprintable), randomize the last 3 bytes.
+# Runs before Waydroid start so the first boot picks it up. Idempotent — rewrites
+# each time, which is fine (random is random).
+hdr "Randomize container eth0 MAC"
+LXC_CFG=/var/lib/waydroid/lxc/waydroid/config
+NEW_MAC=$(printf "00:16:3e:%02x:%02x:%02x" \
+    $((RANDOM & 0x7f)) $((RANDOM & 0xff)) $((RANDOM & 0xff)))
+sudo sed -i "s/^lxc.net.0.hwaddr = .*/lxc.net.0.hwaddr = $NEW_MAC/" "$LXC_CFG"
+ok "container eth0 MAC = $NEW_MAC"
+
 # ── 6. Boot Waydroid ──────────────────────────────────────────────────────────
 hdr "Starting Waydroid (takes 2-3 min)"
 sudo bash /usr/local/bin/waydroid-start.sh
@@ -156,11 +171,38 @@ sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c '
     echo cert_mounted
 ' && ok "CA cert mounted" || warn "CA cert mount failed — check /data/local/tmp/mitmproxy-ca.pem"
 
-# ── 12. Randomize android_id ──────────────────────────────────────────────────
-hdr "Randomize android_id"
+# ── 12. Randomize per-clone identifiers ──────────────────────────────────────
+# Every knob TikTok could read to link clones together. Runtime-settable ones
+# live here; MAC (LXC-level) is handled in step 5b before Waydroid boots.
+#   android_id         — Settings.Secure.ANDROID_ID (reset every clone)
+#   bluetooth_address  — Settings.Secure.BLUETOOTH_ADDRESS (null on stock Waydroid)
+#   device_name        — Settings.Global.DEVICE_NAME ("WayDroid x86_64 Device" on stock — dead giveaway)
+#   persist.radio.imei — getprop persist.radio.imei (empty on stock; 15 digits, Luhn not enforced here)
+# ro.serialno is read-only build-time and stays empty on both VMs — identical-empty
+# is a weak linker only, and setting it would require another build.prop overlay.
+hdr "Randomize per-clone identifiers"
 NEW_ID=$(cat /dev/urandom | tr -dc 'a-f0-9' | head -c 16)
 $ADB shell settings put secure android_id "$NEW_ID"
 ok "android_id = $NEW_ID"
+
+# Locally-administered unicast MAC (0x02 set in first byte) — looks like a
+# software-generated Bluetooth adapter address, not a hardware vendor.
+NEW_BT=$(printf '%02x:%02x:%02x:%02x:%02x:%02x' \
+    $((RANDOM & 0xfe | 0x02)) $((RANDOM & 0xff)) $((RANDOM & 0xff)) \
+    $((RANDOM & 0xff)) $((RANDOM & 0xff)) $((RANDOM & 0xff)))
+$ADB shell settings put secure bluetooth_address "$NEW_BT"
+ok "bluetooth_address = $NEW_BT"
+
+# device_name is what Android exposes as "<My> Pixel 6" to pairing/Chromecast/
+# WifiDirect peers. Keep the space — $ADB shell eats it unless single-quoted.
+$ADB shell "settings put global device_name 'Pixel 6'"
+ok "device_name = Pixel 6"
+
+# IMEI — 15 digits, "35" TAC prefix to look like a GSMA-allocated identifier.
+# persist.radio.* props write to /data/property/ and survive reboot.
+NEW_IMEI=$(printf '35%013d' $((RANDOM * RANDOM * RANDOM % 10000000000000)))
+$ADB shell setprop persist.radio.imei "$NEW_IMEI"
+ok "persist.radio.imei = $NEW_IMEI"
 
 # ── 13. Wipe TikTok app data ──────────────────────────────────────────────────
 hdr "Wipe TikTok session"

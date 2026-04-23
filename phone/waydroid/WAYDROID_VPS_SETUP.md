@@ -63,8 +63,9 @@ account (TikTok login) is deliberately left out.
 
 **Still runs per clone (identity + account state):**
 
+- **Step 5b** — Rewrite `lxc.net.0.hwaddr` in `/var/lib/waydroid/lxc/waydroid/config` to a random `00:16:3e:XX:XX:XX`. The container eth0 MAC is baked into the snapshot; without this every clone shares the same address and `NetworkInterface.getHardwareAddress()` links them.
 - **Step 6–9** — First Waydroid boot + wait for Android + ADB key authorization + `wm size 1080x2400 @ 420dpi`. The ADB host keypair (`~/.android/adbkey{,.pub}`) is baked into the snapshot too, but `waydroid-start.sh` re-authorizes it inside the container on every start.
-- **Step 12** — `android_id` randomization (unique per clone)
+- **Step 12** — Randomize `android_id`, `bluetooth_address`, `device_name`, `persist.radio.imei` (all empty/fixed on stock Waydroid — unique per clone)
 - **Step 13** — `pm clear com.tiktok.lite.go` (wipes the TikTok session baked into the snapshot — critical)
 - **Step 15** — Launch TikTok for first-run
 - **Step 16** — Generate `.env` with `VM_NAME=vps-<external-ip>` (always re-runs — see commit 7a83d4b)
@@ -112,13 +113,14 @@ and skip. Steps that enforce per-clone identity (12, 13, 15, 16) always run.
  3. Patch LXC config for udmabuf — **skipped on snapshot clones**
  4. Generate mitmproxy CA cert — **skipped on snapshot clones**
  5. Install `/usr/local/bin/waydroid-start.sh` (cheap cp; re-runs harmlessly)
+ 5b. Randomize container eth0 MAC (`lxc.net.0.hwaddr`) — **runs per clone (identity)**
  6. Start Waydroid stack; wait for Android boot
  7. Authorize host ADB key inside the container (`/data/misc/adb/adb_keys`)
  8. `wm size 1080x2400` + `wm density 420`
  9. Install libhoudini (ARM→x86 translation) — **skipped on snapshot clones**
 10. Masquerade as Pixel 6 (via local `masquerade_buildprop.py`) — **skipped on snapshot clones**
 11. Re-mount mitmproxy cert (session restart clears it)
-12. Randomize `android_id` — **runs per clone (identity)**
+12. Randomize `android_id`, `bluetooth_address`, `device_name`, `persist.radio.imei` — **runs per clone (identity)**
 13. Wipe TikTok app data — **runs per clone (clears baked TikTok session)**
 14. Install TikTok Lite splits from `patched/` — **skipped on snapshot clones**
 15. Launch TikTok for first-run — **runs per clone**
