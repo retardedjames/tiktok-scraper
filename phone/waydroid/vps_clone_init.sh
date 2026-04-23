@@ -184,7 +184,9 @@ ok "TikTok launched — proceed to VNC for login"
 # ── 16. Generate .env ────────────────────────────────────────────────────────
 # VM_NAME uniqueness is what ntfy messages key on. Derive it from the GCP
 # external IP (falls back to hostname) so clones get distinct names with no
-# manual editing.
+# manual editing. Always rewrite VM_NAME — a clone booted from a machine image
+# inherits the source VM's .env, so "leave alone if exists" would ship the
+# wrong name.
 hdr "Generate .env"
 EXT_IP=$(curl -sf -m 2 -H 'Metadata-Flavor: Google' \
     http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip \
@@ -194,7 +196,8 @@ if [[ ! -f "$SELF_DIR/.env" ]]; then
     sed "s/^VM_NAME=.*/VM_NAME=$VM_NAME_VAL/" "$SELF_DIR/.env.example" > "$SELF_DIR/.env"
     ok ".env written with VM_NAME=$VM_NAME_VAL"
 else
-    ok ".env already exists — leaving alone"
+    sed -i "s/^VM_NAME=.*/VM_NAME=$VM_NAME_VAL/" "$SELF_DIR/.env"
+    ok ".env VM_NAME updated to $VM_NAME_VAL (other settings preserved)"
 fi
 
 # ── 17. Install systemd unit so the stack survives reboots ───────────────────
