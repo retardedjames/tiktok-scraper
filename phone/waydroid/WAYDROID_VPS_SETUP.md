@@ -34,32 +34,44 @@ dial in exact coords per screen.
 
 ## Base Image Plan
 
-**Base snapshot:** take a snapshot of any working VM (e.g. `waydroid-base-YYYY-MM-DD`)
-after the apt/pip prerequisites are installed but **before** `waydroid init`.
-Future clones boot from that snapshot and run `vps_clone_init.sh`.
+**Base snapshot:** take a snapshot of a VM after all non-unique setup has
+been baked in. Future clones boot from that snapshot and run
+`vps_clone_init.sh` — the script is idempotent and skips every baked step
+automatically.
 
-Once the snapshot exists, the source VM can be torn down.
+The baked-in state is everything that is **identical across every clone**.
+Anything that ties the VM to a specific identity (android_id, VM_NAME) or
+account (TikTok login) is deliberately left out.
 
-**Included in the base snapshot:**
+**Baked into the snapshot — `vps_clone_init.sh` will skip these on clones:**
 
-- Ubuntu 25.10
-- apt packages: `sway`, `wayvnc`, `socat`, `adb`, `git`, `lxc`, `psmisc`,
-  `curl`, `waydroid 1.6.2` (binary present, **NOT initialized**)
-- pip packages: `mitmproxy`, `sqlalchemy`, `psycopg2-binary`
-- `~/.local/bin` on PATH (via `.bashrc` + `.profile`)
+| Step | What's baked | Skip guard in `vps_clone_init.sh` |
+|------|--------------|------------------------------------|
+| Ubuntu 25.10 + apt (`sway`, `wayvnc`, `socat`, `adb`, `git`, `lxc`, `psmisc`, `curl`, `waydroid 1.6.2`) | apt state | n/a — prereqs, not in `vps_clone_init.sh` |
+| pip (`mitmproxy`, `sqlalchemy`, `psycopg2-binary`) in `~/.local` | pip state | n/a — prereqs, not in `vps_clone_init.sh` |
+| `binder_linux` auto-load via `/etc/modules-load.d/waydroid.conf` | module config | Step 1 still runs modprobe defensively |
+| `udmabuf` 0666 via `/etc/udev/rules.d/99-udmabuf.rules` | udev rule | Step 1 still chmods defensively |
+| `~/tiktok-scraper/` sparse-clone | repo checkout | n/a — cloned in setup doc, not script |
+| **Step 2** — `/var/lib/waydroid/images/{system,vendor}.img` (~3 GB) | `waydroid init -s GAPPS` output | `if [[ ! -f .../system.img ]]` |
+| **Step 3** — LXC udmabuf mount entry | `/var/lib/waydroid/lxc/waydroid/config_nodes` | `if ! sudo grep -q udmabuf` |
+| **Step 4** — mitmproxy CA cert | `~/.mitmproxy/mitmproxy-ca-cert.pem` | `if [[ ! -f "$CERT" ]]` |
+| **Step 5** — `/usr/local/bin/waydroid-start.sh` | file copy | always overwrites (harmless) |
+| **Step 10** — libhoudini inside container | `/system/lib/libhoudini.so` | `if lxc-attach ... ls /system/lib/libhoudini.so` |
+| **Step 11** — Pixel 6 build.prop overlay | `/var/lib/waydroid/overlay_rw/{system,vendor}/…/build.prop` | grep overlay for `ro.product.system.model=Pixel 6` |
+| **Step 14** — TikTok Lite APK splits installed in container | `pm list packages` has `com.tiktok.lite.go` | `if pm list packages \| grep com.tiktok.lite.go` |
+| **Step 17** — `waydroid-stack.service` systemd unit | `/etc/systemd/system/…` + enabled | `tee` + `enable` are idempotent |
 
-**NOT in the base — happens per clone (`vps_clone_init.sh` drives this):**
+**Still runs per clone (identity + account state):**
 
-- `waydroid init` (downloads ~3 GB Android image — also the device-identity
-  step; must be unique per clone)
-- mitmproxy CA cert (must be unique per VM)
-- libhoudini (ARM→x86 translation)
-- TikTok APK install
-- Pixel 6 masquerade
-- `android_id` randomization
-- `.env` (`VM_NAME` derived from external IP)
-- `waydroid-stack.service` (systemd auto-restart)
-- TikTok account login (manual, via VNC)
+- **Step 6–9** — First Waydroid boot + wait for Android + ADB key authorization + `wm size 1080x2400 @ 420dpi`. The ADB host keypair (`~/.android/adbkey{,.pub}`) is baked into the snapshot too, but `waydroid-start.sh` re-authorizes it inside the container on every start.
+- **Step 12** — `android_id` randomization (unique per clone)
+- **Step 13** — `pm clear com.tiktok.lite.go` (wipes the TikTok session baked into the snapshot — critical)
+- **Step 15** — Launch TikTok for first-run
+- **Step 16** — Generate `.env` with `VM_NAME=vps-<external-ip>` (always re-runs — see commit 7a83d4b)
+- **Manual** — VNC to `<ip>:5900`, log into TikTok with a fresh account
+
+Re-running `vps_clone_init.sh` on the source VM (the one you snapshot from)
+is safe at any time — the same skip-guards apply.
 
 ## Deploying to a New VPS (per-clone)
 
@@ -91,26 +103,28 @@ scripts, no `phone/*.py` clutter. `phone/waydroid/run.sh` does
 `git fetch && git reset --hard origin/main` on each start, and sparse-checkout
 keeps the working tree confined to `phone/waydroid/`.
 
-`vps_clone_init.sh` does the full setup in one pass:
+`vps_clone_init.sh` does the full setup in one pass. Every step is idempotent
+— on a snapshot clone, steps 2, 3, 4, 10, 11, 14, 17 detect the baked state
+and skip. Steps that enforce per-clone identity (12, 13, 15, 16) always run.
 
- 1. Modprobe `binder_linux` + chmod udmabuf
- 2. `waydroid init -s GAPPS` (~3 GB download, ~10 min)
- 3. Patch LXC config for udmabuf
- 4. Generate mitmproxy CA cert
- 5. Install `/usr/local/bin/waydroid-start.sh`
+ 1. Modprobe `binder_linux` + chmod udmabuf (persisted on base snapshot via `/etc/modules-load.d/` + udev; defensive re-run here)
+ 2. `waydroid init -s GAPPS` (~3 GB download, ~10 min) — **skipped on snapshot clones**
+ 3. Patch LXC config for udmabuf — **skipped on snapshot clones**
+ 4. Generate mitmproxy CA cert — **skipped on snapshot clones**
+ 5. Install `/usr/local/bin/waydroid-start.sh` (cheap cp; re-runs harmlessly)
  6. Start Waydroid stack; wait for Android boot
  7. Authorize host ADB key inside the container (`/data/misc/adb/adb_keys`)
  8. `wm size 1080x2400` + `wm density 420`
- 9. Install libhoudini (ARM→x86 translation)
-10. Masquerade as Pixel 6 (via local `masquerade_buildprop.py`)
+ 9. Install libhoudini (ARM→x86 translation) — **skipped on snapshot clones**
+10. Masquerade as Pixel 6 (via local `masquerade_buildprop.py`) — **skipped on snapshot clones**
 11. Re-mount mitmproxy cert (session restart clears it)
-12. Randomize `android_id`
-13. Wipe TikTok app data
-14. Install TikTok Lite splits from `patched/`
-15. Launch TikTok for first-run
-16. **Generate `.env`** with `VM_NAME=vps-<external-ip>` (or hostname if IP lookup fails)
+12. Randomize `android_id` — **runs per clone (identity)**
+13. Wipe TikTok app data — **runs per clone (clears baked TikTok session)**
+14. Install TikTok Lite splits from `patched/` — **skipped on snapshot clones**
+15. Launch TikTok for first-run — **runs per clone**
+16. **Generate `.env`** with `VM_NAME=vps-<external-ip>` — **runs per clone (identity)**
 17. **Install `waydroid-stack.service`** — systemd unit that re-runs
-    `waydroid-start.sh` on every boot (see "Reboot behaviour" below)
+    `waydroid-start.sh` on every boot (see "Reboot behaviour" below) — tee+enable are idempotent
 
 Manual after the script (just one thing):
 

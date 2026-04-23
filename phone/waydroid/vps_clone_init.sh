@@ -107,25 +107,36 @@ ok "1080×2400 @ 420dpi set"
 
 # ── 10. Install libhoudini (ARM translation) ─────────────────────────────────
 hdr "libhoudini (ARM→x86 translation)"
-WS_DIR="/tmp/waydroid_script"
-if [[ ! -d "$WS_DIR" ]]; then
-    git clone https://github.com/casualsnek/waydroid_script "$WS_DIR"
+if sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- ls /system/lib/libhoudini.so 2>/dev/null | grep -q libhoudini; then
+    ok "libhoudini already installed — skipping"
+else
+    WS_DIR="/tmp/waydroid_script"
+    if [[ ! -d "$WS_DIR" ]]; then
+        git clone https://github.com/casualsnek/waydroid_script "$WS_DIR"
+    fi
+    sudo pip3 install tqdm InquirerPy --break-system-packages -q
+    sudo python3 "$WS_DIR/main.py" install libhoudini
+    ok "libhoudini installed"
 fi
-sudo pip3 install tqdm InquirerPy --break-system-packages -q
-sudo python3 "$WS_DIR/main.py" install libhoudini
-ok "libhoudini installed"
 
 # ── 11. Masquerade as Pixel 6 ─────────────────────────────────────────────────
+# Idempotent: if the overlay build.prop already reports Pixel 6 we skip the
+# re-run (saves a session-stop/start cycle on snapshot clones).
 hdr "Pixel 6 masquerade"
 MASQ="$SELF_DIR/masquerade_buildprop.py"
-sudo waydroid session stop
-sudo python3 "$MASQ"
-ok "Build props patched — restarting Waydroid"
-# waydroid-start.sh writes /tmp/waydroid_session.log itself (as root, owned 0644).
-# Don't re-redirect to that path from this (user) shell — it fails with
-# "Permission denied" when the file already exists from step 6. waydroid-start.sh
-# also internally waits for sys.boot_completed, so we don't need a separate sleep.
-sudo bash /usr/local/bin/waydroid-start.sh
+OVERLAY_BP=/var/lib/waydroid/overlay_rw/system/system/build.prop
+if sudo grep -q '^ro\.product\.system\.model=Pixel 6$' "$OVERLAY_BP" 2>/dev/null; then
+    ok "build.prop overlay already reports Pixel 6 — skipping"
+else
+    sudo waydroid session stop
+    sudo python3 "$MASQ"
+    ok "Build props patched — restarting Waydroid"
+    # waydroid-start.sh writes /tmp/waydroid_session.log itself (as root, owned 0644).
+    # Don't re-redirect to that path from this (user) shell — it fails with
+    # "Permission denied" when the file already exists from step 6. waydroid-start.sh
+    # also internally waits for sys.boot_completed, so we don't need a separate sleep.
+    sudo bash /usr/local/bin/waydroid-start.sh
+fi
 BRAND=$(sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- getprop ro.product.brand 2>/dev/null)
 MODEL=$(sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- getprop ro.product.model 2>/dev/null)
 ok "Device reports: brand=$BRAND model=$MODEL"
@@ -155,25 +166,31 @@ $ADB shell pm clear com.tiktok.lite.go 2>/dev/null || true
 ok "TikTok app data cleared"
 
 # ── 14. Install TikTok Lite ──────────────────────────────────────────────────
+# Idempotent: if a base snapshot already baked the APK, skip the re-install
+# (adb install-multiple would otherwise re-push ~150 MB of splits).
 hdr "Install TikTok Lite (patched splits)"
 APK_DIR="$SELF_DIR/patched"
-if [[ ! -f "$APK_DIR/base_patched.apk" ]]; then
-    warn "Patched APKs not found in $APK_DIR"
-    warn "rclone them in and re-run: bash vps_clone_init.sh --skip-to-tiktok-install"
-    exit 1
+if $ADB shell pm list packages 2>/dev/null | grep -q '^package:com.tiktok.lite.go$'; then
+    ok "TikTok Lite already installed — skipping"
+else
+    if [[ ! -f "$APK_DIR/base_patched.apk" ]]; then
+        warn "Patched APKs not found in $APK_DIR"
+        warn "rclone them in and re-run: bash vps_clone_init.sh --skip-to-tiktok-install"
+        exit 1
+    fi
+    $ADB install-multiple \
+        "$APK_DIR/base_patched.apk" \
+        "$APK_DIR/config.arm64_v8a.apk" \
+        "$APK_DIR/config.en.apk" \
+        "$APK_DIR/config.mdpi.apk" \
+        "$APK_DIR/df_edit_effects.apk" \
+        "$APK_DIR/df_edit_filter.apk" \
+        "$APK_DIR/df_edit_sticker.apk" \
+        "$APK_DIR/df_fusing.apk" \
+        "$APK_DIR/df_record_prop.apk" \
+        "$APK_DIR/post_video.apk"
+    ok "TikTok Lite installed"
 fi
-$ADB install-multiple \
-    "$APK_DIR/base_patched.apk" \
-    "$APK_DIR/config.arm64_v8a.apk" \
-    "$APK_DIR/config.en.apk" \
-    "$APK_DIR/config.mdpi.apk" \
-    "$APK_DIR/df_edit_effects.apk" \
-    "$APK_DIR/df_edit_filter.apk" \
-    "$APK_DIR/df_edit_sticker.apk" \
-    "$APK_DIR/df_fusing.apk" \
-    "$APK_DIR/df_record_prop.apk" \
-    "$APK_DIR/post_video.apk"
-ok "TikTok Lite installed"
 
 # ── 15. Launch TikTok for first-run ──────────────────────────────────────────
 hdr "Launch TikTok"
