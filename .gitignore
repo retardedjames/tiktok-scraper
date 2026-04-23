@@ -2,7 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 queue.db
-.env
+/.env
 /tmp/
 *.jsonl
 *.log

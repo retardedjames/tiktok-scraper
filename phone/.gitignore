@@ -1,4 +1,4 @@
-.env
+/.env
 coords.json
 # Waydroid VPS has a fixed 1080x2400 override, so its coords.json is shared
 # across all clones (unlike the real phone, where coords are per-device).
