@@ -73,6 +73,30 @@ for i in $(seq 1 40); do
     sleep 3
 done
 
+# adbd on 5555 comes up before Android userspace has mounted /system, so
+# `lxc-attach ... sh` fails with exit 127 ("Failed to exec sh"). Wait for
+# /system/bin/sh to actually exist in the container namespace before any
+# lxc-attach below. Root-namespace view of container rootfs works here.
+echo "[*] Waiting for /system/bin/sh in container (up to 3 min)..."
+for i in $(seq 1 60); do
+    lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- /system/bin/sh -c 'exit 0' 2>/dev/null \
+        && echo "[*] container sh ready" && break
+    sleep 3
+done
+
+# Retry lxc-attach a few times — even after sh exists, the first couple of
+# calls can race Android init mounting overlays.
+lxc_sh() {
+    local script="$1"
+    for _ in $(seq 1 10); do
+        if lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c "$script"; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 # Pre-authorize host ADB key in container BEFORE any adb command is run below.
 # Without this, `adb connect` returns "unauthorized" and the cert push fails,
 # which `set -e` propagates up and kills the caller (vps_clone_init.sh).
@@ -86,8 +110,7 @@ fi
 if [ -f "$ADBPUB" ]; then
     echo "[*] Pre-authorizing host ADB key in Waydroid container..."
     ADBKEY=$(cat "$ADBPUB")
-    lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c \
-        "mkdir -p /data/misc/adb && echo \"$ADBKEY\" > /data/misc/adb/adb_keys && chmod 640 /data/misc/adb/adb_keys"
+    lxc_sh "mkdir -p /data/misc/adb && echo \"$ADBKEY\" > /data/misc/adb/adb_keys && chmod 640 /data/misc/adb/adb_keys"
     # Force client to reconnect so adbd re-reads the keys file
     sudo -u $WAYDROID_USER adb kill-server >/dev/null 2>&1 || true
     sleep 1
@@ -132,7 +155,7 @@ echo "[*] Installing mitmproxy CA cert..."
 # umount first so a re-run of this script always gets a fresh bind-mount with the
 # correct cert — without this, a second run copies stale files from the already-mounted
 # tmpfs back into itself and the old cert stays in place.
-lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- sh -c '
+lxc_sh '
   umount /system/etc/security/cacerts 2>/dev/null || true
   mkdir -p /tmp/cacerts
   cp /system/etc/security/cacerts/* /tmp/cacerts/
