@@ -84,6 +84,19 @@ REPLACEMENTS = [
     (r"^ro\.product\.first_api_level=.*", "ro.product.first_api_level=32"),
     (r"^ro\.vendor\.build\.fingerprint=.*", "ro.vendor.build.fingerprint=google/oriole/oriole:13/TQ3A.230901.001/10750268:user/release-keys"),
     (r"^ro\.bootimage\.build\.fingerprint=.*", "ro.bootimage.build.fingerprint=google/oriole/oriole:13/TQ3A.230901.001/10750268:user/release-keys"),
+    # CPU ABI: report arm64 as primary so TikTok's host_abi query param reads
+    # `arm64-v8a` instead of `x86_64`. Safe because libhoudini is installed —
+    # the abilist already includes arm64 entries via the native bridge, and
+    # apps load arm64 .so via houdini transparently. We keep x86 in the
+    # secondary lists so the system itself can still find x86 binaries.
+    (rf"^(ro\.product\.(?:{NS})\.cpu\.abi)=.*", r"\1=arm64-v8a"),
+    (rf"^(ro\.product\.(?:{NS})\.cpu\.abilist)=.*", r"\1=arm64-v8a,armeabi-v7a,armeabi,x86_64,x86"),
+    (rf"^(ro\.product\.(?:{NS})\.cpu\.abilist64)=.*", r"\1=arm64-v8a,x86_64"),
+    (rf"^(ro\.product\.(?:{NS})\.cpu\.abilist32)=.*", r"\1=armeabi-v7a,armeabi,x86"),
+    (r"^ro\.product\.cpu\.abi=.*", "ro.product.cpu.abi=arm64-v8a"),
+    (r"^ro\.product\.cpu\.abilist=.*", "ro.product.cpu.abilist=arm64-v8a,armeabi-v7a,armeabi,x86_64,x86"),
+    (r"^ro\.product\.cpu\.abilist64=.*", "ro.product.cpu.abilist64=arm64-v8a,x86_64"),
+    (r"^ro\.product\.cpu\.abilist32=.*", "ro.product.cpu.abilist32=armeabi-v7a,armeabi,x86"),
 ]
 
 def transform(text: str) -> str:
