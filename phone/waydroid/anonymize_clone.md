@@ -32,6 +32,7 @@ the source. Every one of these must be rotated:
 | `Settings.Global.device_name` | inside Android | "WayDroid x86_64 Device" on stock (both identical); after rotate-to-"Pixel 6" it's still identical. Set to something distinct. |
 | `persist.radio.imei` | inside Android | Empty on both by default; if source ran newer init, clone inherits the exact IMEI. |
 | TikTok app data | `/data/data/com.tiktok.lite.go/` | The clone is already **logged in as the source's account**. `pm clear` wipes install ID + session. |
+| `Settings.Global.http_proxy` | inside Android | Source has this set to `127.0.0.1:8080` for its running mitmdump. Clone inherits the setting but has no mitmdump — TikTok login shows "No network connection". Clear before first launch; scraper re-sets it on start. |
 | Scraper `.env` `VM_NAME` | `phone/waydroid/.env` | Keeps ntfy notifications distinguishable. |
 
 **Boot ID** (`/proc/sys/kernel/random/boot_id`) and **uptime** diverge
@@ -139,7 +140,25 @@ sed -i "s/^VM_NAME=.*/VM_NAME=vps-$EXT_IP/" .env
 grep VM_NAME .env
 ```
 
-### 6. Launch TikTok and log in with a FRESH account
+### 6. Clear the inherited `http_proxy` setting
+
+The source VPS is actively scraping, so `Settings.Global.http_proxy` is set
+to `127.0.0.1:8080` (pointing at its mitmdump). The clone inherits that
+setting, but has no mitmdump running — so TikTok tries to send HTTPS through
+a dead proxy and shows "No network connection" on the login screen.
+
+Clear it before launching TikTok. The scraper's `mobile_scrape.py` re-sets
+the proxy itself on every run (see `adb reverse tcp:8080` + `settings put
+global http_proxy 127.0.0.1:8080` in `_start_mitm`), so clearing here
+doesn't break the scraper later.
+
+```bash
+$ADB shell settings put global http_proxy :0
+$ADB shell settings delete global http_proxy
+$ADB shell settings get global http_proxy    # should print: null
+```
+
+### 7. Launch TikTok and log in with a FRESH account
 
 ```bash
 $ADB shell am start -n com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity
@@ -150,7 +169,7 @@ has never been used on another VPS. Reusing an account across clones
 re-links them at the account layer even if every device identifier is now
 unique.
 
-### 7. Verify the clone diverges from the source
+### 8. Verify the clone diverges from the source
 
 Before starting the scraper, dump the fingerprint and diff against the source:
 
@@ -172,7 +191,7 @@ still matches is something this procedure missed — fix before scraping.
 Expected matches (fleet-wide, intentional): the masquerade section (Pixel 6
 props) and most of the LEAK section (Waydroid tells, x86 cpuinfo, etc.).
 
-### 8. Start the scraper
+### 9. Start the scraper
 
 ```bash
 cd ~/tiktok-scraper/phone/waydroid
@@ -196,6 +215,13 @@ different on a disk clone.
 **TikTok immediately signs in as the source's account on first launch:**
 step 4 was skipped or `pm clear` didn't take (race with the running app).
 `am force-stop` first, then `pm clear`, then relaunch.
+
+**TikTok login screen shows "No network connection" (clone can ping 8.8.8.8
+fine):** step 6 was skipped. The inherited `http_proxy=127.0.0.1:8080`
+points at a mitmdump that only runs on the source. Run step 6's three adb
+commands, then relaunch TikTok (`am force-stop` + `am start`). The clone
+can reach the internet — only HTTPS is broken, because the system-wide
+proxy swallows it.
 
 **Host `/etc/hostname` still shows the source's hostname:** cosmetic,
 doesn't affect TikTok. Change via `sudo hostnamectl set-hostname <new>` if
