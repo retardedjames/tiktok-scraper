@@ -1,5 +1,23 @@
 # Waydroid VPS TikTok Scraper
 
+> **⚠️ DEPRECATED (2026-04-23).** This doc (and `vps_clone_init.sh`) covers the
+> old workflow where a new VPS boots from a **base snapshot** of stock Waydroid
+> (Android not yet initialized) and runs the 17-step init to finish setup.
+>
+> The current workflow clones a **fully-set-up, already-running source VPS**
+> (disk clone → everything inherited, including Waydroid images, overlay
+> masquerade, TikTok app install, and — critically — every per-clone identifier
+> and the TikTok login session). That's a different problem: instead of
+> initializing from stock, we need to *downgrade* the clone so it no longer
+> shares fingerprints with the source.
+>
+> **Use [anonymize_clone.md](anonymize_clone.md) for new VPSes.** This file is
+> kept only as historical reference for the 17-step init; do not run
+> `vps_clone_init.sh` on a disk-cloned VPS — it assumes stock Waydroid state
+> that doesn't hold.
+
+---
+
 Self-contained fork of the `phone/` scraper adapted for Waydroid running on
 a Linux VPS. Every file the VM needs lives in this folder — rclone it to a
 new VPS and run `vps_clone_init.sh` to finish setup.
