@@ -18,6 +18,13 @@ HOSTS_SUBSTR = ("tiktok", "tiktokv", "byteoversea", "bytedance", "musical.ly")
 
 
 def response(flow: http.HTTPFlow):
+    try:
+        _record(flow)
+    except Exception as e:
+        print(f"[cap] addon error (swallowed): {e!r}", flush=True)
+
+
+def _record(flow: http.HTTPFlow):
     host = flow.request.host
     if not any(s in host for s in HOSTS_SUBSTR):
         return
@@ -27,9 +34,15 @@ def response(flow: http.HTTPFlow):
 
     # keep response payload small — we only need search response bodies in full,
     # other endpoints (device_register/common) are usually <2KB anyway
-    body = resp.content or b""
+    # Use raw_content to bypass auto-decoding — TikTok uses 'ttzip' as a
+    # Content-Encoding, and mitmproxy's auto-decode raises ValueError on it,
+    # which would abort the addon and leave no record on disk.
     body_b64 = None
     body_text = None
+    try:
+        body = resp.raw_content or b""
+    except Exception:
+        body = b""
     try:
         body_text = body[:8192].decode("utf-8", errors="replace")
     except Exception:

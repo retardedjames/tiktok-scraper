@@ -196,7 +196,11 @@ def call_tiktok(query: str, sig: dict) -> tuple[int, bytes, dict]:
         "x-tt-ultra-lite": "1",
         "x-tt-store-region": "us",
         "x-tt-store-region-src": "uid",
-        "accept-encoding": "gzip",
+        # bdturing is TikTok's anti-bot layer; captured phone sent this. Omit
+        # and the search service may shadow-reject (HTTP 200 + aweme_list=null).
+        "x-vc-bdturing-sdk-version": "2.3.15.i18n",
+        "ttzip-tlb": "1",
+        "accept-encoding": "gzip, ttzip",
         "user-agent": USER_AGENT,
         "cookie": COOKIE,
         "x-argus": sig["X-Argus"],
