@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-RAPIDAPI_KEY = "20dc87029dmsh5df77ebff84ece1p1c5bf2jsn86c8c4d561b6"
+RAPIDAPI_KEY = "2861349ef0mshd02e93636381db1p17b22cjsn20fbcdc12948"
 RAPIDAPI_HOST = "bytedance-services.p.rapidapi.com"
 SIGN_URL = f"https://{RAPIDAPI_HOST}/mssdk_common/sign"
 

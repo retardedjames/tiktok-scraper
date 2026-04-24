@@ -1,0 +1,4 @@
+# 1.8MB binary, easy to re-extract from Waydroid
+libs/libmetasec_ov.so
+# Oracle dumps contain real session cookies and RapidAPI-signed headers; keep local
+oracles/*.json
