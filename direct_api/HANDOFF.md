@@ -1,7 +1,7 @@
 # direct_api handoff
 
 Goal: replace the phone+Waydroid+mitmproxy scraper with pure HTTP calls
-to TikTok's mobile search API. The blocker is signing — TikTok's MSSDK
+to TikTok's mobile search API. The blocker was signing — TikTok's MSSDK
 computes `X-Argus`/`X-Ladon`/`X-Gorgon`/`X-Khronos` with an algorithm
 specific to aid=1340 (TikTok Lite) that no public signer implements
 correctly. **Why we need this, not mitmproxy scraping**: TikTok detects
@@ -10,30 +10,92 @@ per-account cap makes the app-driven approach untenable at scale. Pure
 HTTP with stolen device+cookies (which we have, logged in, warm) means
 one account signs thousands of queries per day with no UI friction.
 
-## TL;DR — current state (2026-04-24 evening)
+## TL;DR — current state (2026-04-24 late evening) — ✅ WORKING
 
-1. **We tried 3 public MSSDK signers** (SignerPy 0.12.0, int4444/Metasec,
-   iqbalmh18/tiktok-signer). **All silently rejected by TikTok**
-   (HTTP 200 + `aweme_list=null` + ~80ms server_stream_time vs ~700ms
-   for valid). Their Argus protobuf schemas target aid=1233, not 1340.
-2. **We have 3 known-good RapidAPI-signed oracles** in
-   `direct_api/oracles/oracle_00_mario_c0.json` etc., produced by a
-   working RapidAPI key (see below). Each contains the exact query,
-   device, mssdk, RapidAPI sig, and verified TikTok response. These
-   are the offline ground truth for testing any future signer.
-3. **We extracted `libmetasec_ov.so`** (1.8MB, ARM64) locally at
-   `direct_api/libs/libmetasec_ov.so` (gitignored). This is the
-   library that contains the signing algorithm.
-4. **We proved Frida on x86 (via Houdini) cannot hook ARM64 code.** It
-   CAN read the memory, but `Interceptor.attach` fails with
-   `unable to intercept function at 0x400021238560`. B path is dead.
-5. **We got Waydroid+TT running on native ARM64** (GCP VM
-   `34.133.197.84`). TikTok Lite installed, libmetasec_ov loads on
-   first API call. But **`frida-server-17.9.1-android-arm64` crashes
-   on startup** with
-   `Frida:ERROR:linux-host-session.vala:704: assertion failed: (res == OK)`.
-   Host and container ptrace_scope both set to 0 — didn't help. **The
-   recommended next step is to downgrade to Frida 16.6.6 and try again.**
+**Plan D (Frida signer-proxy) succeeded end-to-end.** Running locally-signed
+requests through TT Lite on the ARM VM is producing accepted, populated
+search responses. Signing takes ~1.3s per request and returns all four
+MSSDK headers (`X-Argus`, `X-Gorgon`, `X-Khronos`, `X-Ladon`).
+
+Proof (ARM VM, 2026-04-24):
+```
+[sig] ['X-Argus', 'X-Gorgon', 'X-Khronos', 'X-Ladon'] in 1281ms (cached_ts=0)
+[tiktok] status=200 bytes=2055911
+[verdict] ACCEPTED  aweme_count=30  sst=717ms
+first_item: "What are those pants?" digg_count=4,637,035 (= mario top hit)
+```
+
+Key files that landed (all committed):
+- `direct_api/frida/hook_metasec.js` — Frida script that hooks
+  `art::JNI<kEnableIndexIds>::RegisterNatives` and discovers
+  libmetasec_ov's single JNI entrypoint.
+- `direct_api/frida/trace_sign.js` — tracer that logs every call to
+  `ms.bd.o.k.a`, filtering out the noisy string-decoder op.
+- `direct_api/frida/sign_agent.js` — persistent Frida agent that
+  exposes `rpc.exports.sign(url, headers)` backed by live TT Lite.
+- `direct_api/frida_signer.py` — Python client that attaches to the
+  running TT Lite over adb + frida and relays sign requests.
+- `direct_api/replay_search_frida.py` — end-to-end validator:
+  `base_headers + build_query → FridaSigner.sign_request →
+  call_tiktok` and checks aweme_count/sst for acceptance.
+- `direct_api/traces/*.log` (gitignored; contain live `odin_tt` +
+  `install_id` session cookies from the ARM VM's TT Lite) — the
+  Rosetta Stone from the first successful JNI trace. Regenerate with
+  `ssh jamescvermont@34.133.197.84 'python3 /tmp/run_trace.py >
+  /tmp/frida-trace.log 2>&1 &'` and scp it back if you need to
+  re-derive the contract.
+
+## The signing contract (verified via trace_sign.js)
+
+ByteDance's MSSDK exposes a single JNI entrypoint from
+`libmetasec_ov.so`:
+
+```java
+class ms.bd.o.k {
+    static native Object a(int op, int sub, long ts, String arg, Object payload);
+}
+```
+
+- registered via `JNI<bool>::RegisterNatives` @ `libmetasec_ov+0xfb27c`
+- `op` integer dispatches to different internal services. Known ops:
+  - `0x01000001` — string de-obfuscation (thousands of calls per second;
+    reflects encrypted Java class/method names at runtime). Ignore.
+  - `0x03000001` — **request signing**. `arg`=full URL w/ query,
+    `payload`=flat `String[]{k,v,k,v,...}` of existing request headers.
+    Returns flat `String[]{"X-Argus",...,"X-Ladon",...}` of headers
+    to add. Some endpoints only get a 2-header subset (Gorgon+Khronos
+    for monitor/log collectors); search/item gets all 4.
+- `ts` is a process-monotonic value (same value across sign calls in
+  one process). Passing `0` works; the URL's own `_rticket` / `ts`
+  params carry wall-clock.
+
+## Known things that *didn't* work, and why — don't re-try
+
+1. **Public MSSDK signers** (SignerPy 0.12.0, int4444/Metasec,
+   iqbalmh18/tiktok-signer) — all target aid=1233 protobuf schemas.
+   TikTok returns HTTP 200 + `aweme_list=null` + ~80ms
+   server_stream_time. Not usable.
+2. **x86 Waydroid + Houdini-translated libmetasec_ov** — Frida CAN
+   read ARM64 memory but `Interceptor.attach` fails
+   (`unable to intercept function at 0x400021238560`). Houdini
+   doesn't route hooks through its translation layer. VM
+   `34.171.201.223` remains OK for static RE only.
+3. **frida-server 17.9.1 on ARM64 Android 13 LineageOS** — crashes
+   on startup with
+   `frida_android_helper_service_do_start: assertion failed`.
+   **16.6.6 works**; that's the pinned version now.
+4. **Frida `Java.use("ms.bd.o.k").a(...)` with `Java.array(...)` as
+   the 5th (Object-typed) argument** — fails with
+   `argument types do not match` / `expected a pointer`. Frida's
+   JS-only array shim isn't a real jobject. **Fix**: build the array
+   via `Array.newInstance(String.class, n) + Array.set(...)` so it
+   is a real jobject; then direct `K.a(...)` works.
+5. **Frida `Class.forName("ms.bd.o.k")`** — throws
+   `ClassNotFoundException` because the system classloader doesn't
+   see TT's app classloader. Use `Java.use(...).class` instead.
+6. **RPC export `cached_ts` in JS** — Frida's Python binding
+   camelCases snake_case Python attribute access, so the JS name
+   must be camelCase (`cachedTs`) to match.
 
 ## RapidAPI key (fresh as of 2026-04-24)
 
@@ -231,166 +293,117 @@ executes it via `app_process`. On this Android 13 ARM build, something
 in that bootstrap fails. Reports in frida issues suggest a fix in
 older versions (16.x line). **Next step is 16.6.6 — do this first.**
 
-## Next-steps playbook
+## Operational — bring the stack up from cold
 
 ### Step 0 — Verify state hasn't drifted
 
 ```bash
-# GCP ARM VM — ensure Waydroid is up
 ssh -i ~/.ssh/jamescvermont jamescvermont@34.133.197.84
-sudo waydroid status  # expect Session=RUNNING, Container=RUNNING
-adb -s 127.0.0.1:5556 shell getprop sys.boot_completed  # expect "1"
-adb -s 127.0.0.1:5556 shell pm path com.tiktok.lite.go  # expect package: lines
+sudo waydroid status  # Session=RUNNING, Container=RUNNING
+adb -s 127.0.0.1:5556 shell getprop sys.boot_completed  # "1"
+adb -s 127.0.0.1:5556 shell pm path com.tiktok.lite.go  # package paths
 
-# If container is frozen / boot not complete:
+# If frozen:
 bash /tmp/wstart.sh
-# Then nudge UI:
 sudo -u jamescvermont env XDG_RUNTIME_DIR=/run/user/1001 \
     WAYLAND_DISPLAY=wayland-1 waydroid show-full-ui > /tmp/ui.log 2>&1 &
 ```
 
-### Step 1 — Downgrade Frida to 16.6.6
+### Step 1 — Make sure frida-server 16.6.6 is running
 
 ```bash
-# On ARM VM:
-sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- killall frida-server 2>/dev/null
-adb -s 127.0.0.1:5556 shell rm -f /data/local/tmp/frida-server \
-    "/data/local/tmp/frida-helper-*"
-cd /tmp
-rm -f frida-server.xz frida-server
-curl -fsSLo frida-server.xz \
-    https://github.com/frida/frida/releases/download/16.6.6/frida-server-16.6.6-android-arm64.xz
-unxz frida-server.xz
-adb -s 127.0.0.1:5556 push frida-server /data/local/tmp/frida-server
-adb -s 127.0.0.1:5556 shell chmod 755 /data/local/tmp/frida-server
-
-# Also downgrade host tools (wire protocol match):
-pip install --user --break-system-packages --force-reinstall frida==16.6.6 frida-tools==13.2.1
-~/.local/bin/frida --version  # expect 16.6.6
-
-# Start frida-server (inside container as root):
-sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- \
-    /data/local/tmp/frida-server -l 0.0.0.0:27042 &
-sleep 3
-# Expect no Bail out. Confirm:
+# Check:
 sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- pidof frida-server
+
+# If missing:
+nohup sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- \
+    /data/local/tmp/frida-server -l 0.0.0.0:27042 > /tmp/frida-server.log 2>&1 &
+
+# Confirm:
 ~/.local/bin/frida-ps -U | head
-# Expect list of Android processes including TikTok Lite (if running)
+~/.local/bin/frida --version  # 16.6.6
 ```
 
-If 16.6.6 also fails: try 16.5.9 or 16.4.10. If none work, investigate
-the helper dex issue — likely `app_process` signature mismatch on
-Android 13 ARM64 LineageOS; can be bypassed with
-`frida-inject` (static injection, no helper service).
-
-### Step 2 — Run the discovery hook
-
-`hook_metasec.js` is on disk at
-`/home/james/tiktok-scraper/direct_api/frida/hook_metasec.js` locally
-and needs to be pushed to the ARM VM:
+### Step 2 — Make sure TT Lite is running
 
 ```bash
-scp -i ~/.ssh/jamescvermont \
-    /home/james/tiktok-scraper/direct_api/frida/hook_metasec.js \
-    jamescvermont@34.133.197.84:~/frida/hook_metasec.js
-
-ssh -i ~/.ssh/jamescvermont jamescvermont@34.133.197.84
-
-# Kill any stale TT so spawn-attach catches JNI_OnLoad:
-adb -s 127.0.0.1:5556 shell am force-stop com.tiktok.lite.go
-
-# Spawn + attach:
-~/.local/bin/frida -U -f com.tiktok.lite.go -l ~/frida/hook_metasec.js \
-    --runtime=v8
-
-# Let TT hit its first API call (triggers libmetasec_ov load + first
-# RegisterNatives call). In another terminal:
-adb -s 127.0.0.1:5556 shell input swipe 360 960 360 320 500
-# (repeat once or twice — TT may show a login nag, swipe past it)
+adb -s 127.0.0.1:5556 shell pidof com.tiktok.lite.go
+# If missing:
+adb -s 127.0.0.1:5556 shell am start -n \
+    com.tiktok.lite.go/com.ss.android.ugc.aweme.main.homepage.MainActivity
 ```
 
-Expected output in the Frida session:
-```
-[mx] bootstrap
-[mx] Java.perform ready
-[mx] libart RegisterNatives matches: <n>
-[mx]   <mangled symbol> @ <address>
-[mx] hooking RegisterNatives @ <address> (...)
-[mx] RegisterNatives hook installed: true
-[mx] DLOPEN .../libmetasec_ov.so
-[mx] === RegisterNatives class=com.bytedance.mobsec.<...> count=N ===
-[mx]   [0] leviTransform(...) -> libmetasec_ov+0x<offset>
-[mx]   [1] ...
-```
+TT pinning on SignUpActivity is fine — the signer works without login;
+only the actual `/search/item/` call needs the logged-in device
+cookies/tokens (which live in `replay_search.py:DEVICE/COOKIE/X_TT_TOKEN`,
+not in the running TT session).
 
-The method(s) of interest will have names like `leviTransform`,
-`metaSec*`, or `sign`. Their signatures and fnPtrs are what we need
-to move forward.
+### Step 3 — Smoke-test the signer
 
-### Step 3 — Trace one real signing call
-
-Once we know the class + method name + signature, replace the
-placeholder `call_string_to_string` in `hook_metasec.js` with a real
-JNI invocation via `Java.use()` / reflection. The method's signature
-will dictate the arg types. Expected shape (based on public
-decompilations of older MSSDK):
-
-```java
-class com.bytedance.mobsec.metasec.ovs.MetaSec {
-    native byte[] leviTransform(long ts, String url, byte[] payload, ...);
-}
+```bash
+cd ~/direct_api
+python3 replay_search_frida.py mario
+# Expect:
+# [sig] ['X-Argus', 'X-Gorgon', 'X-Khronos', 'X-Ladon'] in ~1200ms
+# [tiktok] status=200 bytes=~2MB
+# [verdict] ACCEPTED  aweme_count=30  sst=~700ms
 ```
 
-Hook this method's fnPtr to log inputs and outputs on every call.
-Then interact with TT (open app, start typing in search box) to
-generate calls. Dump ~5 calls with their (query, timestamp, input
-bytes, output bytes). This is our Rosetta Stone.
+## Next steps — toward production
 
-### Step 4 — Build the Frida signer-proxy
+### Step 4 — Wire the signer into scrape_keyword.py
 
-Rather than reverse-engineer the algorithm, **run the app forever and
-call the JNI method on demand** from Python:
+`scrape_keyword.py` currently uses `replay_search.call_signer()` (RapidAPI).
+Swap it for a `FridaSigner`-backed path, matching the interface in
+`replay_search_frida.py`. The FridaSigner is **slow** relative to RapidAPI
+(~1.3s vs ~200ms), so keep one process-wide singleton (already the default)
+rather than re-attaching per page.
 
-```python
-# ~/tiktok-scraper/direct_api/frida_signer.py
-import frida
+### Step 5 — Remote signer pattern (scraper on JC1, signer on ARM VM)
 
-device = frida.get_usb_device()
-session = device.attach("com.tiktok.lite.go")
-script = session.create_script(open("hook_metasec.js").read())
-script.load()
-api = script.exports_sync
+Today the signer must run on the same machine as adb (the ARM VM). For
+production the scraper will run on JC1 or similar, NOT the ARM VM. Two
+options:
+- **Forward frida-server's TCP socket** to the scraper host. On JC1:
+  `ssh -L 27042:127.0.0.1:27042 jamescvermont@34.133.197.84` — then
+  `frida.get_device_manager().add_remote_device("127.0.0.1:27042")`.
+  Frida also needs adb to resolve the TT pid — so either mirror that,
+  or refactor `frida_signer.py` to ask the agent for the pid via an
+  `enumerate` RPC and bypass adb on the client side.
+- **Run scrape_keyword on the ARM VM directly.** Simpler. Downside:
+  one IP per scraper limits concurrency.
 
-def sign_query(query: str, ts: int) -> dict:
-    """Ask the live TT process to sign `query` via its own MSSDK."""
-    return api.call_sign(query, ts)
-```
+Pick option A only when multi-VM scraping becomes necessary.
 
-This becomes the new `call_signer()` in `scrape_keyword.py`. The ARM
-VM needs to be up 24/7 with TT + frida-server + an attached agent.
+### Step 6 — Persistent agent (so we don't re-attach per run)
 
-TLDR: we skip algorithm reversing entirely. We just **ask TT to sign
-for us**, programmatically, as many times as we want. Rate-limit is
-not on TT's signing — it's on TikTok's search API (per-account, per-IP).
-Since we're using ONE logged-in device for thousands of queries, we
-share its rate limit, not multiply it.
+Each invocation of `frida_signer.py` spends ~1-2s attaching + loading
+the agent. For a 35,000-sign/month workload that's wasted latency.
+Simplest fix: wrap `FridaSigner` in a long-running local HTTP server
+(Flask/FastAPI) on the ARM VM that keeps the Frida session alive and
+exposes `POST /sign {url, headers}`. `scrape_keyword.py` hits it over
+loopback. This is also what the "scraper on a different VM" pattern
+wants anyway.
 
-### Step 5 — Wire into scrape_keyword.py
+### Step 7 — Keep TT Lite alive
 
-Replace `call_signer()` with a call to `frida_signer.sign_query()`.
-End-to-end test on "mario" — expect ~100 videos across 10 pages,
-top-like-count 4.6M. Confirm against
-`oracles/oracle_00_mario_c0.json` first page structure.
+If TT Lite ever dies (OOM, background killer), the Frida session dies
+with it. Supervise with either:
+- A systemd user service that monitors `adb pidof com.tiktok.lite.go`
+  and re-launches + re-attaches if empty.
+- Or add a `frida.get_device().on('lost', ...)` handler in the
+  long-running server from Step 6 that reattaches automatically.
 
-### Step 6 — Production
+### Step 8 — Account rotation (future)
 
-- Run scrape_keyword in a worker loop pulling from Postgres queue
-  (like `scrape_forever.py` / `queue.py` already do).
-- **Account rotation**: when TikTok rate-limits the device (returns
-  all-empty responses for a while), rotate to a new device fingerprint.
-  Capture a new one by logging into TT Lite on a real phone, running
-  mitmproxy briefly to dump device_id + cookies + x-tt-token,
-  injecting that into a new `DEVICE` dict. One rotation = fresh quota.
+The ARM VM's TT install is currently NOT the logged-in account — our
+requests use cookies from `replay_search.py:DEVICE`. If that session
+expires (sid_guard goes until 2026-10-18), OR if TikTok starts
+rate-limiting that device specifically, capture fresh tokens from a
+real phone + mitmproxy and update `DEVICE`/`COOKIE`/`X_TT_TOKEN`.
+Whether the ARM VM's TT is logged in with the SAME account is
+irrelevant — the signer signs URLs, not identities; the cookies we
+attach in `call_tiktok` are what TikTok uses for auth.
 
 ## Appendix A — Commands to re-capture an oracle
 

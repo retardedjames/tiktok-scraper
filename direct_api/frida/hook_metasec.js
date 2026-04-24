@@ -39,69 +39,79 @@ function isInMetasec(addr) {
 }
 
 function installRegisterNativesHook() {
-    // Both 64-bit and 32-bit ART have the symbol — resolve via ApiResolver
-    const resolver = new ApiResolver("module");
-    const matches = resolver.enumerateMatches("exports:libart.so!*RegisterNatives*");
-    log("libart RegisterNatives matches: " + matches.length);
-    let target = null;
-    for (const m of matches) {
-        log("  " + m.name + " @ " + m.address);
-        // Prefer the JNI-flavor of RegisterNatives (takes JNIEnv* / jclass / JNINativeMethod*)
-        if (m.name.includes("RegisterNatives") && m.name.includes("JNI")) target = m;
+    // Modern ART (Android 12+) templatizes JNI as art::JNI<bool>::RegisterNatives,
+    // giving two instantiations: JNIILb0EE (kEnableIndexIds=false) and JNIILb1EE (true).
+    // These are internal symbols, not exports — ApiResolver("exports:") misses them.
+    // Use enumerateSymbols instead. Also hook CheckJNI::RegisterNatives (used when JNI
+    // checks are enabled, e.g. debug builds).
+    const syms = Module.enumerateSymbols("libart.so").filter(s =>
+        s.name.indexOf("RegisterNatives") !== -1 && s.type === "function"
+    );
+    log("libart RegisterNatives symbols: " + syms.length);
+    const targets = [];
+    for (const s of syms) {
+        log("  " + s.name + " @ " + s.address);
+        // Accept both JNI<...>::RegisterNatives and CheckJNI::RegisterNatives.
+        // Skip only obvious non-matches.
+        if (s.name.indexOf("RegisterNatives") !== -1) targets.push(s);
     }
-    if (!target && matches.length) target = matches[0];
-    if (!target) {
+    if (!targets.length) {
         log("WARN: no RegisterNatives symbol found — hook not installed");
         return false;
     }
-    log("hooking RegisterNatives @ " + target.address + " (" + target.name + ")");
-    Interceptor.attach(target.address, {
-        onEnter(args) {
-            const clazz = args[1];
-            const methods = args[2];
-            const count = args[3].toInt32();
+    const onEnter = function(args) {
+        const clazz = args[1];
+        const methods = args[2];
+        const count = args[3].toInt32();
 
-            // Check if any of the fnPtrs land inside libmetasec_ov
-            let anyInMetasec = false;
-            for (let i = 0; i < count; i++) {
-                const m = methods.add(i * Process.pointerSize * 3);
-                const fn = m.add(Process.pointerSize * 2).readPointer();
-                if (isInMetasec(fn)) { anyInMetasec = true; break; }
-            }
-            if (!anyInMetasec) return;
-
-            // Get the class name via Java bridge
-            let clsName = "?";
-            try {
-                const env2 = Java.vm.tryGetEnv();
-                if (env2) {
-                    const Class = Java.use("java.lang.Class");
-                    const clsObj = Java.cast(clazz, Class);
-                    clsName = clsObj.getName();
-                }
-            } catch (e) { clsName = "<err>"; }
-
-            log("=== RegisterNatives class=" + clsName + " count=" + count + " ===");
-            for (let i = 0; i < count; i++) {
-                const m = methods.add(i * Process.pointerSize * 3);
-                const nameAddr = m.readPointer();
-                const sigAddr  = m.add(Process.pointerSize).readPointer();
-                const fn       = m.add(Process.pointerSize * 2).readPointer();
-                const name = nameAddr.readCString();
-                const sig  = sigAddr.readCString();
-                const r    = getMetasecRange();
-                const offset = r ? "+0x" + fn.sub(r.base).toString(16) : "outside";
-                log("  [" + i + "] " + name + sig + " -> libmetasec_ov" + offset + " (" + fn + ")");
-                discovered[clsName + "." + name] = {
-                    className: clsName,
-                    methodName: name,
-                    signature: sig,
-                    fnPtr: fn,
-                    offset: r ? fn.sub(r.base) : null,
-                };
-            }
+        // Check if any of the fnPtrs land inside libmetasec_ov
+        let anyInMetasec = false;
+        for (let i = 0; i < count; i++) {
+            const m = methods.add(i * Process.pointerSize * 3);
+            const fn = m.add(Process.pointerSize * 2).readPointer();
+            if (isInMetasec(fn)) { anyInMetasec = true; break; }
         }
-    });
+        if (!anyInMetasec) return;
+
+        // Get the class name via Java bridge
+        let clsName = "?";
+        try {
+            const env2 = Java.vm.tryGetEnv();
+            if (env2) {
+                const Class = Java.use("java.lang.Class");
+                const clsObj = Java.cast(clazz, Class);
+                clsName = clsObj.getName();
+            }
+        } catch (e) { clsName = "<err>"; }
+
+        log("=== RegisterNatives class=" + clsName + " count=" + count + " ===");
+        for (let i = 0; i < count; i++) {
+            const m = methods.add(i * Process.pointerSize * 3);
+            const nameAddr = m.readPointer();
+            const sigAddr  = m.add(Process.pointerSize).readPointer();
+            const fn       = m.add(Process.pointerSize * 2).readPointer();
+            const name = nameAddr.readCString();
+            const sig  = sigAddr.readCString();
+            const r    = getMetasecRange();
+            const offset = r ? "+0x" + fn.sub(r.base).toString(16) : "outside";
+            log("  [" + i + "] " + name + sig + " -> libmetasec_ov" + offset + " (" + fn + ")");
+            discovered[clsName + "." + name] = {
+                className: clsName,
+                methodName: name,
+                signature: sig,
+                fnPtr: fn,
+                offset: r ? fn.sub(r.base) : null,
+            };
+        }
+    };
+    for (const t of targets) {
+        try {
+            Interceptor.attach(t.address, { onEnter });
+            log("hooked RegisterNatives @ " + t.address + " (" + t.name + ")");
+        } catch (e) {
+            log("FAIL to hook " + t.name + ": " + e);
+        }
+    }
     return true;
 }
 

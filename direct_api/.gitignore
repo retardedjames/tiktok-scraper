@@ -2,3 +2,6 @@
 libs/libmetasec_ov.so
 # Oracle dumps contain real session cookies and RapidAPI-signed headers; keep local
 oracles/*.json
+# Raw Frida traces capture live odin_tt / install_id / ttreq cookies from the
+# ARM VM's TT Lite session — keep local, never commit.
+traces/*.log
