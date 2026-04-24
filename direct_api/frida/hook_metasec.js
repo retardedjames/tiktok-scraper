@@ -1,174 +1,181 @@
 /*
- * hook_metasec.js — discover + trace TikTok Lite's signing JNI methods.
+ * hook_metasec.js — discover libmetasec_ov.so's JNI signing methods
+ * and expose them as Frida RPC calls.
  *
- * Targets libmetasec_ov.so's RegisterNatives call inside JNI_OnLoad.
- *
- * Algorithm:
- *   1. Install hooks as early as possible: dlopen (catches when libmetasec_ov loads),
- *      and libart's RegisterNatives (catches ALL native method registrations).
- *   2. When libmetasec_ov triggers RegisterNatives, dump every {name, sig, fnPtr}
- *      registered under the metasec class.
- *   3. The method named "leviTransform" / "sign" / "metaSec*" is our target.
- *   4. After discovery, user can run rpc.exports.sign(query, ...) from Python.
- *
- * Usage:
+ * Usage (from host):
  *   frida -U -f com.tiktok.lite.go -l hook_metasec.js --runtime=v8
- *   (spawn-attach so we catch JNI_OnLoad at app init)
+ *
+ * Once methods are discovered, the Python side can call:
+ *   agent.exports.list_methods()
+ *   agent.exports.call_sign(args_dict)
  */
 
 const TARGET_SO = "libmetasec_ov.so";
-let metasecMod = null;
-let signingFns = {};  // name -> NativePointer
+const discovered = {};      // key: className.methodName -> { name, sig, fn, nameAddr, sigAddr }
+let metasecRange = null;    // { base, end } for libmetasec_ov
 
 function log(msg) { console.log("[mx] " + msg); }
 
-// ----------------------------------------------------------------
-// dlopen tracking — know when libmetasec_ov loads
-// ----------------------------------------------------------------
-for (const fname of ["dlopen", "__dl_dlopen", "android_dlopen_ext", "__loader_dlopen"]) {
-    const addr = Module.findGlobalExportByName(fname);
-    if (!addr) continue;
-    Interceptor.attach(addr, {
-        onEnter(args) { this.path = args[0] ? args[0].readCString() : null; },
-        onLeave() {
-            if (!this.path) return;
-            if (this.path.includes(TARGET_SO)) {
-                log("DLOPEN " + this.path);
-                setImmediate(() => bindMetasecModule());
-            }
-        }
-    });
+function getMetasecRange() {
+    if (metasecRange) return metasecRange;
+    // Primary: native module enum
+    let m = Process.findModuleByName(TARGET_SO);
+    if (m) { metasecRange = { base: m.base, end: m.base.add(m.size) }; return metasecRange; }
+    // Fallback: scan ranges for the file path
+    const ranges = Process.enumerateRanges("r-x").filter(r =>
+        r.file && r.file.path && r.file.path.includes(TARGET_SO)
+    );
+    if (ranges.length) {
+        metasecRange = { base: ranges[0].base, end: ranges[ranges.length-1].base.add(ranges[ranges.length-1].size) };
+        return metasecRange;
+    }
+    return null;
 }
 
-function bindMetasecModule() {
-    if (metasecMod) return;
-    const m = Process.findModuleByName(TARGET_SO);
-    if (!m) { log("post-dlopen: module still not visible, will retry"); return; }
-    metasecMod = m;
-    log("bound " + TARGET_SO + " @ " + m.base + " size=0x" + m.size.toString(16));
-    log("exports:");
-    for (const e of m.enumerateExports()) log("  " + e.type + " " + e.name + " @ " + e.address);
-    log("symbols (top 30):");
-    for (const s of m.enumerateSymbols().slice(0, 30)) log("  " + s.type + " " + s.name + " @ " + s.address);
-    // Don't try to hook JNI_OnLoad directly — too late (it's already running).
-    // Instead, we rely on RegisterNatives hook for the method table dump.
+function isInMetasec(addr) {
+    const r = getMetasecRange();
+    if (!r) return false;
+    return addr.compare(r.base) >= 0 && addr.compare(r.end) < 0;
 }
 
-// ----------------------------------------------------------------
-// RegisterNatives hook — discovers JNI method registrations
-// ----------------------------------------------------------------
 function installRegisterNativesHook() {
-    // libart exports RegisterNatives under a mangled name. Find it via ApiResolver.
+    // Both 64-bit and 32-bit ART have the symbol — resolve via ApiResolver
     const resolver = new ApiResolver("module");
     const matches = resolver.enumerateMatches("exports:libart.so!*RegisterNatives*");
-    log("libart RegisterNatives candidates: " + matches.length);
-    for (const m of matches) log("  " + m.name + " @ " + m.address);
-
-    // Standard ART signature: art::JNI::RegisterNatives(_JNIEnv*, _jclass*, JNINativeMethod const*, int)
-    let target = matches.find(m => m.name.indexOf("RegisterNatives") !== -1);
-    if (!target && matches.length) target = matches[0];
-
-    if (!target) {
-        log("no RegisterNatives symbol — falling back to scan");
-        return;
+    log("libart RegisterNatives matches: " + matches.length);
+    let target = null;
+    for (const m of matches) {
+        log("  " + m.name + " @ " + m.address);
+        // Prefer the JNI-flavor of RegisterNatives (takes JNIEnv* / jclass / JNINativeMethod*)
+        if (m.name.includes("RegisterNatives") && m.name.includes("JNI")) target = m;
     }
-
-    log("installing RegisterNatives hook @ " + target.address);
+    if (!target && matches.length) target = matches[0];
+    if (!target) {
+        log("WARN: no RegisterNatives symbol found — hook not installed");
+        return false;
+    }
+    log("hooking RegisterNatives @ " + target.address + " (" + target.name + ")");
     Interceptor.attach(target.address, {
         onEnter(args) {
-            const env = args[0];
             const clazz = args[1];
             const methods = args[2];
             const count = args[3].toInt32();
 
-            // Get class name via Java.vm if available
+            // Check if any of the fnPtrs land inside libmetasec_ov
+            let anyInMetasec = false;
+            for (let i = 0; i < count; i++) {
+                const m = methods.add(i * Process.pointerSize * 3);
+                const fn = m.add(Process.pointerSize * 2).readPointer();
+                if (isInMetasec(fn)) { anyInMetasec = true; break; }
+            }
+            if (!anyInMetasec) return;
+
+            // Get the class name via Java bridge
             let clsName = "?";
             try {
                 const env2 = Java.vm.tryGetEnv();
                 if (env2) {
-                    const getObjCls = env2.findClass("java/lang/Object").getClass();
-                    // Simpler: use the wrapper
                     const Class = Java.use("java.lang.Class");
                     const clsObj = Java.cast(clazz, Class);
                     clsName = clsObj.getName();
                 }
-            } catch (e) { clsName = "<err:" + e.message + ">"; }
-
-            // Filter: only print when registration involves metasec code
-            const pages = [];
-            for (let i = 0; i < count; i++) {
-                const m = methods.add(i * Process.pointerSize * 3);
-                const fn = m.add(Process.pointerSize * 2).readPointer();
-                const mod = Process.findModuleByAddress(fn);
-                if (mod && mod.name.includes("metasec")) pages.push(true);
-            }
-            const isInteresting = pages.length > 0 || /metasec|MSSdk|mssdk|MetaSec/i.test(clsName);
-            if (!isInteresting) return;
+            } catch (e) { clsName = "<err>"; }
 
             log("=== RegisterNatives class=" + clsName + " count=" + count + " ===");
             for (let i = 0; i < count; i++) {
                 const m = methods.add(i * Process.pointerSize * 3);
-                const name = m.readPointer().readCString();
-                const sig  = m.add(Process.pointerSize).readPointer().readCString();
-                const fn   = m.add(Process.pointerSize * 2).readPointer();
-                const mod  = Process.findModuleByAddress(fn);
-                const where = mod ? (mod.name + "+0x" + fn.sub(mod.base).toString(16)) : ("?@" + fn);
-                log("  [" + i + "] " + name + sig + " -> " + where);
-                signingFns[clsName + "." + name] = fn;
+                const nameAddr = m.readPointer();
+                const sigAddr  = m.add(Process.pointerSize).readPointer();
+                const fn       = m.add(Process.pointerSize * 2).readPointer();
+                const name = nameAddr.readCString();
+                const sig  = sigAddr.readCString();
+                const r    = getMetasecRange();
+                const offset = r ? "+0x" + fn.sub(r.base).toString(16) : "outside";
+                log("  [" + i + "] " + name + sig + " -> libmetasec_ov" + offset + " (" + fn + ")");
+                discovered[clsName + "." + name] = {
+                    className: clsName,
+                    methodName: name,
+                    signature: sig,
+                    fnPtr: fn,
+                    offset: r ? fn.sub(r.base) : null,
+                };
             }
         }
     });
+    return true;
 }
 
 // ----------------------------------------------------------------
-// Generic signing-call tracer — once RegisterNatives hook has
-// populated signingFns, we can trace specific invocations.
+// RPC: expose to Python side
 // ----------------------------------------------------------------
-function traceSigningCalls() {
-    for (const [key, fn] of Object.entries(signingFns)) {
-        if (!/sign|levi|transform|Metasec/i.test(key)) continue;
-        log("tracing " + key + " @ " + fn);
-        Interceptor.attach(fn, {
-            onEnter(args) {
-                this.key = key;
-                this.args = [args[0], args[1], args[2], args[3], args[4], args[5]];
-                log("CALL " + key);
-                for (let i = 0; i < 6; i++) {
-                    try {
-                        const a = args[i];
-                        log("  arg[" + i + "] = " + a);
-                    } catch (_) {}
-                }
-            },
-            onLeave(rv) {
-                log("RETURN " + this.key + " = " + rv);
-            }
+rpc.exports = {
+    list_methods() {
+        return Object.entries(discovered).map(([k, v]) => ({
+            key: k,
+            className: v.className,
+            methodName: v.methodName,
+            signature: v.signature,
+            fnPtr: v.fnPtr.toString(),
+            offset: v.offset ? v.offset.toString() : null,
+        }));
+    },
+
+    metasec_base() {
+        const r = getMetasecRange();
+        return r ? r.base.toString() : null;
+    },
+
+    // Call a JNI method we discovered. Args is a list of primitive JS values;
+    // we reconstruct proper Java args via JNIEnv.
+    // For this iteration we only handle the simple String-in/String-out shape
+    // ByteDance signers typically use: sign(byte[] input) returns byte[].
+    // More complex signatures we'll special-case later.
+    //
+    // This is a placeholder — once we know the actual signature from discovery,
+    // we'll fill in the proper JNI call.
+    async call_string_to_string(method_key, input_str) {
+        const m = discovered[method_key];
+        if (!m) throw new Error("method not discovered: " + method_key);
+        return Java.performNow(() => {
+            // TODO: once we see the actual sig, implement properly.
+            // For now, return an error so we know this is a stub.
+            return {
+                error: "call_string_to_string is a stub; implement per-method after discovery",
+                method: m,
+            };
         });
-    }
-}
+    },
+};
 
 // ----------------------------------------------------------------
 // Bootstrap
 // ----------------------------------------------------------------
 setImmediate(() => {
     log("bootstrap");
+    // Install hook early; libart is loaded by default in every app.
     Java.perform(() => {
         log("Java.perform ready");
-        installRegisterNativesHook();
-        bindMetasecModule(); // in case it's already loaded
+        const hooked = installRegisterNativesHook();
+        log("RegisterNatives hook installed: " + hooked);
 
-        // Expose an RPC so we can trigger tracing on demand later
-        rpc.exports = {
-            list: () => Object.keys(signingFns),
-            trace: () => { traceSigningCalls(); return "tracing enabled"; },
-            dumpMetasec: () => {
-                if (!metasecMod) return { error: "libmetasec_ov not loaded" };
-                return {
-                    base: metasecMod.base.toString(),
-                    size: metasecMod.size,
-                    path: metasecMod.path,
-                };
-            }
-        };
+        // Also attach dlopen hook to know when libmetasec_ov loads.
+        for (const fname of ["dlopen", "__dl_dlopen", "android_dlopen_ext", "__loader_dlopen"]) {
+            const addr = Module.findGlobalExportByName(fname);
+            if (!addr) continue;
+            Interceptor.attach(addr, {
+                onEnter(args) { this.path = args[0] ? args[0].readCString() : null; },
+                onLeave() {
+                    if (this.path && this.path.includes(TARGET_SO)) {
+                        log("DLOPEN " + this.path);
+                        getMetasecRange();
+                    }
+                }
+            });
+        }
+
+        // If already loaded, bind now.
+        getMetasecRange();
+
+        log("ready — waiting for RegisterNatives calls");
     });
 });
